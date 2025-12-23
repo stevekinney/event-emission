@@ -1,114 +1,335 @@
-# Project Name
+# Event Emission
 
-## Prerequisites
+A lightweight, type-safe event system with DOM EventTarget ergonomics and TC39 Observable interoperability. Use one event source with callbacks, async iterators, and RxJS without losing TypeScript safety.
 
-- [Bun](https://bun.sh) installed on your machine.
+## Why this library
+
+- **Typed events** - Event maps keep payloads and event names in sync
+- **Familiar API** - `addEventListener`, `removeEventListener`, `dispatchEvent`
+- **Observable-ready** - Works with RxJS and other TC39 Observable libraries
+- **Async iteration** - `for await...of` over events with backpressure options
+- **Wildcard listeners** - Listen to `*` or namespaced `user:*` patterns
+- **Observable state** - Proxy any object and emit change events automatically
+- **AbortSignal support** - Cleanup with AbortController
+- **No dependencies** - Framework-agnostic, works in Node, Bun, and browsers
+
+## When to use it
+
+- Typed app-level event buses
+- Bridging DOM events to RxJS pipelines
+- State objects that emit change events for UI updates
+- Component/service emitters without stringly-typed payloads
 
 ## Installation
 
-Create a new project based on this template:
-
 ```bash
-# Basic installation
-bun create github.com/stevekinney/bun-template $PROJECT_DIRECTORY
-
-# Skip installing dependencies (useful for CI or offline work)
-bun create github.com/stevekinney/bun-template $PROJECT_DIRECTORY --no-install
+npm install event-emission
+# or
+bun add event-emission
+# or
+pnpm add event-emission
 ```
 
-The `--no-install` flag is helpful when:
+## Quick start
 
-- Working in offline environments
-- Using CI pipelines with cached dependencies
-- You plan to modify dependencies before installation
+```typescript
+import { createEventTarget } from 'event-emission';
 
-## Core Tools
+type UserEvents = {
+  'user:login': { userId: string; timestamp: Date };
+  'user:logout': { userId: string };
+  error: Error;
+};
 
-- Bun: runtime, bundler, test runner, and package manager
-- TypeScript: strict type checking
-- ESLint + Prettier: linting and formatting (flat config)
-- Husky + lint-staged: fast pre-commit checks
+const events = createEventTarget<UserEvents>();
 
-## Development
+events.addEventListener('user:login', (event) => {
+  console.log(`User ${event.detail.userId} logged in at ${event.detail.timestamp}`);
+});
 
-Start the development server:
-
-```bash
-bun run dev
+events.dispatchEvent({
+  type: 'user:login',
+  detail: { userId: '123', timestamp: new Date() },
+});
 ```
 
-### Git Hooks (Husky)
+## Core concepts
 
-Husky is set up via the `prepare` script on install. Hooks are implemented as Bun TypeScript files in `scripts/husky/` and invoked by wrappers in `.husky/`.
+- **Event map**: a TypeScript type that maps event names to payload types.
+- **Event shape**: `{ type: string; detail: Payload }` for all listeners.
+- **Unsubscribe**: `addEventListener` returns a function to remove the listener.
 
-- `pre-commit`: runs lint-staged; ensures `bun.lock` is staged when `package.json` is.
-- `post-checkout`: on branch checkouts, installs deps when `package.json` + `bun.lock` changed; surfaces config changes.
-- `post-merge`: installs deps and cleans caches when config changed; prints merge stats and conflict checks.
+## API overview
 
-Use `--no-verify` to bypass hooks (not recommended).
+- `createEventTarget<E>(options?)`
+- `createEventTarget(target, { observe: true, ... })`
+- `Eventful<E>` base class
+- Interop: `fromEventTarget`, `forwardToEventTarget`, `pipe`
+- Utilities: `isObserved`, `getOriginal`
 
-### Running Tests
+## createEventTarget
 
-This template comes with Bun's built-in test runner. To run tests:
+### `createEventTarget<E>(options?)`
 
-```bash
-bun test
+Creates a typed event target.
+
+```typescript
+type Events = {
+  message: { text: string };
+  error: Error;
+};
+
+const target = createEventTarget<Events>();
 ```
 
-For watching mode:
+**Options:**
 
-```bash
-bun test --watch
+| Option            | Type                                     | Description                                  |
+| ----------------- | ---------------------------------------- | -------------------------------------------- |
+| `onListenerError` | `(type: string, error: unknown) => void` | Custom error handler for listener exceptions |
+
+If a listener throws and no `onListenerError` is provided, an `error` event is emitted. If there are no `error` listeners, the error is re-thrown.
+
+### Observable state
+
+Create state objects that emit change events:
+
+```typescript
+const state = createEventTarget({ count: 0, user: { name: 'Ada' } }, { observe: true });
+
+state.addEventListener('update', (event) => {
+  console.log('State changed:', event.detail.current);
+});
+
+state.addEventListener('update:count', (event) => {
+  console.log(
+    `Count changed from ${event.detail.previous.count} to ${event.detail.value}`,
+  );
+});
+
+state.count = 1; // Triggers 'update' and 'update:count'
+state.user.name = 'Grace'; // Triggers 'update' and 'update:user.name'
 ```
 
-For test coverage:
+**Observe options:**
 
-```bash
-bun test --coverage
+| Option          | Type                            | Default  | Description                        |
+| --------------- | ------------------------------- | -------- | ---------------------------------- |
+| `observe`       | `boolean`                       | `false`  | Enable property change observation |
+| `deep`          | `boolean`                       | `true`   | Observe nested objects             |
+| `cloneStrategy` | `'shallow' \| 'deep' \| 'path'` | `'path'` | How to clone previous state        |
+
+**Update event details:**
+
+- `update` and `update:path` events include `{ value, current, previous }`.
+- Array mutators emit method events like `update:items.push` with `{ method, args, added, removed, current, previous }`.
+
+## Event listeners
+
+### `addEventListener(type, listener, options?)`
+
+Adds a listener and returns an unsubscribe function.
+
+```typescript
+const unsubscribe = events.addEventListener('message', (event) => {
+  console.log(event.detail.text);
+});
+
+unsubscribe();
 ```
 
-### Continuous Integration
+**Options:**
 
-No CI workflows are included by default. Add your own under `.github/workflows/` as needed.
+| Option   | Type          | Description                                  |
+| -------- | ------------- | -------------------------------------------- |
+| `once`   | `boolean`     | Remove listener after first invocation       |
+| `signal` | `AbortSignal` | Abort signal to remove listener when aborted |
 
-### Understanding `bun run` vs `bunx`
+### `once(type, listener, options?)`
 
-`bun run` and `bunx` are two different commands that often confuse beginners:
+Adds a one-time listener.
 
-- **bun run**: Executes scripts defined in your project's package.json (like `bun run dev` runs the "dev" script). Also runs local TypeScript/JavaScript files directly (like `bun run src/index.ts`).
+### `removeEventListener(type, listener)`
 
-- **bunx**: Executes binaries from npm packages without installing them globally (similar to `npx`). Use it for one-off commands or tools you don't need permanently installed (like `bunx prettier --write .` or `bunx shadcn@canary add button`).
+Removes a specific listener.
 
-## Project Structure
+### `removeAllListeners(type?)`
 
-- `src/` - Source code for your application
-- `.husky/` - Git hook wrappers (shell) calling Bun scripts in `scripts/husky/`
-- `scripts/husky/` - Hook implementations (TypeScript + Bun)
+Removes all listeners, or all listeners for a type.
 
-## Customization
+### Wildcard listeners
 
-### TypeScript Configuration
+```typescript
+events.addWildcardListener('*', (event) => {
+  console.log(`Got ${event.originalType}:`, event.detail);
+});
 
-The template includes TypeScript configuration with path aliases:
+events.addWildcardListener('user:*', (event) => {
+  console.log(`User event: ${event.originalType}`);
+});
+```
 
-```json
-{
-  "compilerOptions": {
-    "paths": {
-      "@/*": ["./src/*"]
-    }
+Wildcard events include `{ type: pattern, originalType, detail }`.
+
+## Async iteration
+
+```typescript
+for await (const event of events.events('message', { bufferSize: 16 })) {
+  console.log('Received:', event.detail.text);
+}
+```
+
+**Iterator options:**
+
+| Option             | Type                                        | Default         | Description                    |
+| ------------------ | ------------------------------------------- | --------------- | ------------------------------ |
+| `signal`           | `AbortSignal`                               | -               | Abort signal to stop iteration |
+| `bufferSize`       | `number`                                    | `Infinity`      | Maximum buffered events        |
+| `overflowStrategy` | `'drop-oldest' \| 'drop-latest' \| 'throw'` | `'drop-oldest'` | Behavior when buffer is full   |
+
+When `overflowStrategy` is `throw`, the iterator throws `BufferOverflowError`.
+
+## Observable interoperability
+
+### `subscribe(type, observer)`
+
+```typescript
+const subscription = events.subscribe('message', {
+  next: (event) => console.log(event.detail),
+  error: (err) => console.error(err),
+  complete: () => console.log('Done'),
+});
+
+subscription.unsubscribe();
+```
+
+### `toObservable()`
+
+Returns an Observable that emits all events.
+
+```typescript
+import { from } from 'rxjs';
+import { filter, map } from 'rxjs/operators';
+
+const observable = from(events);
+
+observable
+  .pipe(
+    filter((event) => event.type === 'message'),
+    map((event) => event.detail.text),
+  )
+  .subscribe(console.log);
+```
+
+## Lifecycle
+
+### `complete()`
+
+Marks the event target as complete, clears listeners, and ends iterators.
+
+### `clear()`
+
+Removes all listeners without marking as complete.
+
+## Eventful base class
+
+Extend `Eventful` to build typed emitters:
+
+```typescript
+import { Eventful } from 'event-emission';
+
+class UserService extends Eventful<{
+  'user:created': { id: string; name: string };
+  'user:deleted': { id: string };
+  error: Error;
+}> {
+  createUser(name: string) {
+    const id = crypto.randomUUID();
+    this.dispatchEvent({ type: 'user:created', detail: { id, name } });
+    return id;
   }
 }
 ```
 
-## Template Setup (bun-create)
+## DOM interoperability
 
-When using `bun create` with this template, a postinstall sequence runs once to bootstrap the project:
+### `fromEventTarget(domTarget, eventTypes, options?)`
 
-- Sets `package.json:name` from the folder name
-- Copies `.env.example` to `.env` (or appends missing keys)
-- Writes `OPEN_AI_API_KEY`, `ANTHROPIC_AI_API_KEY`, and `GEMINI_AI_API_KEY` from your shell into `.env` if present
-- Runs `bun run prepare` to install Husky
-- Cleans up setup scripts and removes the `bun-create` entry from `package.json`
+```typescript
+import { fromEventTarget } from 'event-emission';
 
-These steps self-delete after running; you can adjust them by editing files in `scripts/setup/` before the first install.
+type ButtonEvents = {
+  click: MouseEvent;
+  focus: FocusEvent;
+};
+
+const button = document.getElementById('my-button');
+const events = fromEventTarget<ButtonEvents>(button, ['click', 'focus']);
+
+events.addEventListener('click', (event) => {
+  console.log('Button clicked!', event.detail);
+});
+
+events.destroy();
+```
+
+### `forwardToEventTarget(source, domTarget, options?)`
+
+```typescript
+import { createEventTarget, forwardToEventTarget } from 'event-emission';
+
+const events = createEventTarget<{ custom: { value: number } }>();
+const element = document.getElementById('target');
+
+const unsubscribe = forwardToEventTarget(events, element);
+
+events.dispatchEvent({ type: 'custom', detail: { value: 42 } });
+
+unsubscribe();
+```
+
+### `pipe(source, target, options?)`
+
+```typescript
+import { createEventTarget, pipe } from 'event-emission';
+
+const componentEvents = createEventTarget<{ ready: void }>();
+const appBus = createEventTarget<{ ready: void }>();
+
+const unsubscribe = pipe(componentEvents, appBus);
+
+unsubscribe();
+```
+
+Note: `pipe(source, target)` forwards all events via a wildcard listener. The instance method `events.pipe(target)` only forwards event types that already have listeners when you call it.
+
+## Utilities
+
+### `isObserved(obj)`
+
+Checks if an object is an observed proxy.
+
+### `getOriginal(proxy)`
+
+Returns the original unproxied object.
+
+## TypeScript types
+
+```typescript
+import type {
+  EventfulEvent,
+  EventTargetLike,
+  ObservableLike,
+  Observer,
+  Subscription,
+  WildcardEvent,
+  AddEventListenerOptionsLike,
+  ObservableEventMap,
+  PropertyChangeDetail,
+  ArrayMutationDetail,
+} from 'event-emission';
+```
+
+## License
+
+MIT
