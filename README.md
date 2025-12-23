@@ -1,8 +1,8 @@
 # Event Emission
 
-A lightweight, type-safe event system with DOM EventTarget ergonomics and TC39 Observable interoperability. Use one event source with callbacks, async iterators, and RxJS without losing TypeScript safety.
+A lightweight, zero-dependency, type-safe event system with DOM EventTarget ergonomics and TC39 Observable interoperability. Use one event source with callbacks, async iterators, and RxJS without losing TypeScript safety.
 
-## Why this library
+## Tasting notes
 
 - **Typed events** - Event maps keep payloads and event names in sync
 - **Familiar API** - `addEventListener`, `removeEventListener`, `dispatchEvent`
@@ -82,7 +82,7 @@ type Events = {
 const target = createEventTarget<Events>();
 ```
 
-**Options:**
+#### Options
 
 | Option            | Type                                     | Description                                  |
 | ----------------- | ---------------------------------------- | -------------------------------------------- |
@@ -329,7 +329,3 @@ import type {
   ArrayMutationDetail,
 } from 'event-emission';
 ```
-
-## License
-
-MIT
