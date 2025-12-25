@@ -3,7 +3,7 @@ import { describe, expect, it } from 'bun:test';
 import {
   type ArrayMutationDetail,
   createEventTarget,
-  type EventfulEvent,
+  type EmissionEvent,
   type EventTargetLike,
   getOriginal,
   isObserved,
@@ -78,7 +78,7 @@ describe('observe module coverage', () => {
       const original = { items: [3, 1, 2] };
       const state = createEventTarget(original, { observe: true });
 
-      let updateEvent: EventfulEvent<unknown> | null = null;
+      let updateEvent: EmissionEvent<unknown> | null = null;
       // Listen for the method-specific event
       state.addEventListener('update:items.sort' as 'update', (event) => {
         updateEvent = event;
@@ -95,7 +95,7 @@ describe('observe module coverage', () => {
       const original = { items: [1, 2, 3] };
       const state = createEventTarget(original, { observe: true });
 
-      let updateEvent: EventfulEvent<unknown> | null = null;
+      let updateEvent: EmissionEvent<unknown> | null = null;
       state.addEventListener('update:items.reverse' as 'update', (event) => {
         updateEvent = event;
       });
@@ -111,7 +111,7 @@ describe('observe module coverage', () => {
       const original = { items: [1, 2, 3] };
       const state = createEventTarget(original, { observe: true });
 
-      let updateEvent: EventfulEvent<unknown> | null = null;
+      let updateEvent: EmissionEvent<unknown> | null = null;
       state.addEventListener('update:items.fill' as 'update', (event) => {
         updateEvent = event;
       });
@@ -127,7 +127,7 @@ describe('observe module coverage', () => {
       const original = { items: [1, 2, 3, 4, 5] };
       const state = createEventTarget(original, { observe: true });
 
-      let updateEvent: EventfulEvent<unknown> | null = null;
+      let updateEvent: EmissionEvent<unknown> | null = null;
       state.addEventListener('update:items.copyWithin' as 'update', (event) => {
         updateEvent = event;
       });
@@ -176,7 +176,7 @@ describe('observe module coverage', () => {
   });
 
   describe('setupEventForwarding', () => {
-    it('forwards events from source EventTarget to Eventful target', () => {
+    it('forwards events from source EventTarget to EventEmission target', () => {
       // Create a mock source EventTarget
       const sourceListeners = new Map<string, Set<(event: unknown) => void>>();
       const source = {

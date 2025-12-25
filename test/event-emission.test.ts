@@ -2,20 +2,20 @@ import { describe, expect, it } from 'bun:test';
 
 import {
   BufferOverflowError,
-  Eventful,
-  type EventfulEvent,
+  type EmissionEvent,
+  EventEmission,
   type MinimalAbortSignal,
 } from '../src/index';
 
 // Concrete implementation for testing
-class TestEmitter extends Eventful<{
+class TestEmitter extends EventEmission<{
   foo: number;
   bar: string;
   baz: { x: number; y: number };
 }> {}
 
 // Test emitter with explicit error event type for error handling tests
-class TestEmitterWithError extends Eventful<{
+class TestEmitterWithError extends EventEmission<{
   foo: number;
   bar: string;
   error: Error;
@@ -43,11 +43,11 @@ function createAbortSignal(): { signal: MinimalAbortSignal; abort: () => void } 
   };
 }
 
-describe('Eventful abstract class', () => {
+describe('EventEmission abstract class', () => {
   describe('subclass usage', () => {
     it('allows extending with typed events', () => {
       const emitter = new TestEmitter();
-      let payload: EventfulEvent<number> | null = null;
+      let payload: EmissionEvent<number> | null = null;
 
       emitter.addEventListener('foo', (event) => {
         payload = event;
@@ -58,14 +58,14 @@ describe('Eventful abstract class', () => {
     });
 
     it('emits events from subclass methods', () => {
-      class CustomEmitter extends Eventful<{ ready: { timestamp: number } }> {
+      class CustomEmitter extends EventEmission<{ ready: { timestamp: number } }> {
         initialize() {
           this.dispatchEvent({ type: 'ready', detail: { timestamp: 123 } });
         }
       }
 
       const emitter = new CustomEmitter();
-      let received: EventfulEvent<{ timestamp: number }> | null = null;
+      let received: EmissionEvent<{ timestamp: number }> | null = null;
 
       emitter.addEventListener('ready', (event) => {
         received = event;
@@ -318,7 +318,7 @@ describe('Eventful abstract class', () => {
   describe('TC39 Observable interop', () => {
     it('subscribe with observer object receives events', () => {
       const emitter = new TestEmitter();
-      const received: EventfulEvent<unknown>[] = [];
+      const received: EmissionEvent<unknown>[] = [];
 
       emitter.subscribe({
         next: (event) => received.push(event),
@@ -334,7 +334,7 @@ describe('Eventful abstract class', () => {
 
     it('subscribe with callback function receives events', () => {
       const emitter = new TestEmitter();
-      const received: EventfulEvent<unknown>[] = [];
+      const received: EmissionEvent<unknown>[] = [];
 
       emitter.subscribe((event) => received.push(event));
 
@@ -344,7 +344,7 @@ describe('Eventful abstract class', () => {
 
     it('subscription.unsubscribe stops receiving events', () => {
       const emitter = new TestEmitter();
-      const received: EventfulEvent<unknown>[] = [];
+      const received: EmissionEvent<unknown>[] = [];
 
       const sub = emitter.subscribe((event) => received.push(event));
 
@@ -775,8 +775,8 @@ describe('Eventful abstract class', () => {
     });
 
     it('supports mapFn to transform events', () => {
-      class SourceEmitter extends Eventful<{ input: number }> {}
-      class TargetEmitter extends Eventful<{ output: string }> {}
+      class SourceEmitter extends EventEmission<{ input: number }> {}
+      class TargetEmitter extends EventEmission<{ output: string }> {}
 
       const source = new SourceEmitter();
       const target = new TargetEmitter();
@@ -801,7 +801,7 @@ describe('Eventful abstract class', () => {
   });
 
   describe('wildcard listener methods', () => {
-    class NamespacedEmitter extends Eventful<{
+    class NamespacedEmitter extends EventEmission<{
       'user:login': { id: string };
       'user:logout': { id: string };
       'system:start': { time: number };

@@ -2,18 +2,19 @@ import { createEventTarget } from './factory';
 import type {
   DOMEventLike,
   DOMEventTargetLike,
+  EmissionEvent,
   EventTargetLike,
   InteropOptions,
 } from './types';
 
 /**
- * Forward events from an Eventful target to a DOM EventTarget.
+ * Forward events from an EventEmission target to a DOM EventTarget.
  *
  * This function sets up a wildcard listener on the source that forwards
  * all events to the DOM target using dispatchEvent.
  *
  * @template E - Event map type of the source.
- * @param source - The Eventful source to forward events from.
+ * @param source - The EventEmission source to forward events from.
  * @param target - The DOM EventTarget to forward events to.
  * @param options - Optional configuration including abort signal.
  * @returns An unsubscribe function that stops forwarding when called.
@@ -26,7 +27,7 @@ import type {
  * // Forward all events to the DOM button
  * const unsubscribe = forwardToEventTarget(events, button);
  *
- * // Now when you dispatch events on the Eventful target,
+ * // Now when you dispatch events on the EventEmission target,
  * // they will also be dispatched on the DOM element
  * events.dispatchEvent({ type: 'click', detail: { x: 100, y: 200 } });
  *
@@ -56,7 +57,7 @@ export function forwardToEventTarget<E extends Record<string, unknown>>(
 }
 
 /**
- * Options for creating an Eventful target from a DOM EventTarget.
+ * Options for creating an EventEmission target from a DOM EventTarget.
  */
 export interface FromEventTargetOptions extends InteropOptions {
   /**
@@ -67,16 +68,16 @@ export interface FromEventTargetOptions extends InteropOptions {
 }
 
 /**
- * Create an Eventful target that listens to events from a DOM EventTarget.
+ * Create an EventEmission target that listens to events from a DOM EventTarget.
  *
  * This function wraps a DOM EventTarget and forwards specified events to a new
- * Eventful target, enabling type-safe event handling and TC39 Observable compatibility.
+ * EventEmission target, enabling type-safe event handling and TC39 Observable compatibility.
  *
  * @template E - Event map type where keys are event names and values are event detail types.
  * @param domTarget - The DOM EventTarget to listen to events from.
  * @param eventTypes - Array of event type names to forward from the DOM target.
  * @param options - Optional configuration including abort signal and error handler.
- * @returns An Eventful target with a destroy() method for cleanup.
+ * @returns An EventEmission target with a destroy() method for cleanup.
  *
  * @example Basic usage with DOM element
  * ```typescript
@@ -132,7 +133,7 @@ export function fromEventTarget<E extends Record<string, unknown>>(
   eventTypes: Array<keyof E & string>,
   options?: FromEventTargetOptions,
 ): EventTargetLike<E> & { destroy: () => void } {
-  const eventful = createEventTarget<E>({
+  const emitter = createEventTarget<E>({
     onListenerError: options?.onListenerError,
   });
 
@@ -140,10 +141,10 @@ export function fromEventTarget<E extends Record<string, unknown>>(
 
   for (const type of eventTypes) {
     const handler = (event: DOMEventLike) => {
-      eventful.dispatchEvent({
+      emitter.dispatchEvent({
         type,
         detail: (event.detail ?? event) as E[typeof type],
-      });
+      } as unknown as EmissionEvent<E[keyof E & string]>);
     };
     handlers.set(type, handler);
     domTarget.addEventListener(type, handler);
@@ -159,29 +160,30 @@ export function fromEventTarget<E extends Record<string, unknown>>(
         domTarget.removeEventListener(type, handler);
       }
       handlers.clear();
-      eventful.complete();
+      emitter.complete();
     };
     options.signal.addEventListener('abort', onAbort, { once: true });
     if (options.signal.aborted) onAbort();
   }
 
   return {
-    addEventListener: eventful.addEventListener,
-    removeEventListener: eventful.removeEventListener,
-    dispatchEvent: eventful.dispatchEvent,
-    clear: eventful.clear,
-    once: eventful.once,
-    removeAllListeners: eventful.removeAllListeners,
-    pipe: eventful.pipe,
-    addWildcardListener: eventful.addWildcardListener,
-    removeWildcardListener: eventful.removeWildcardListener,
-    subscribe: eventful.subscribe,
-    toObservable: eventful.toObservable,
-    complete: eventful.complete,
+    addEventListener: emitter.addEventListener,
+    removeEventListener: emitter.removeEventListener,
+    dispatchEvent: emitter.dispatchEvent,
+    clear: emitter.clear,
+    once: emitter.once,
+    removeAllListeners: emitter.removeAllListeners,
+    pipe: emitter.pipe,
+    addWildcardListener: emitter.addWildcardListener,
+    removeWildcardListener: emitter.removeWildcardListener,
+    on: emitter.on,
+    subscribe: emitter.subscribe,
+    toObservable: emitter.toObservable,
+    complete: emitter.complete,
     get completed() {
-      return eventful.completed;
+      return emitter.completed;
     },
-    events: eventful.events,
+    events: emitter.events,
     destroy: () => {
       // Clean up abort signal listener to prevent memory leak
       if (options?.signal && onAbort) {
@@ -191,21 +193,21 @@ export function fromEventTarget<E extends Record<string, unknown>>(
         domTarget.removeEventListener(type, handler);
       }
       handlers.clear();
-      eventful.complete();
+      emitter.complete();
     },
   };
 }
 
 /**
- * Pipe events from one Eventful target to another.
+ * Pipe events from one EventEmission target to another.
  *
  * This function sets up a wildcard listener on the source that forwards all
  * events to the target. Useful for composing event streams, creating event
  * buses, or building hierarchical event systems.
  *
  * @template E - Event map type shared by both source and target.
- * @param source - The Eventful target to pipe events from.
- * @param target - The Eventful target to pipe events to.
+ * @param source - The EventEmission target to pipe events from.
+ * @param target - The EventEmission target to pipe events to.
  * @param options - Optional configuration including abort signal.
  * @returns An unsubscribe function that stops piping when called.
  *
@@ -264,7 +266,7 @@ export function pipe<E extends Record<string, unknown>>(
       target.dispatchEvent({
         type: event.originalType,
         detail: event.detail as E[keyof E & string],
-      });
+      } as unknown as EmissionEvent<E[keyof E & string]>);
     },
     options,
   );

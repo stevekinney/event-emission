@@ -2,11 +2,12 @@ import { createEventTarget } from './factory';
 import { SymbolObservable } from './symbols';
 import type {
   AddEventListenerOptionsLike,
-  EventfulEvent,
+  EmissionEvent,
   EventsIteratorOptions,
   EventTargetLike,
   ObservableLike,
   Observer,
+  OnOptions,
   Subscription,
   WildcardEvent,
 } from './types';
@@ -32,7 +33,7 @@ import type {
  * @example Basic usage
  * ```typescript
  * // Define your emitter with typed events
- * class UserService extends Eventful<{
+ * class UserService extends EventEmission<{
  *   'user:created': { id: string; name: string };
  *   'user:deleted': { id: string };
  *   error: Error;
@@ -76,7 +77,7 @@ import type {
  * ```
  */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any -- Generic constraint requires any for flexibility
-export abstract class Eventful<E extends Record<string, any>> {
+export abstract class EventEmission<E extends Record<string, any>> {
   readonly #target: EventTargetLike<E>;
 
   constructor() {
@@ -93,7 +94,7 @@ export abstract class Eventful<E extends Record<string, any>> {
    */
   addEventListener<K extends keyof E & string>(
     type: K,
-    listener: (event: EventfulEvent<E[K]>) => void | Promise<void>,
+    listener: (event: EmissionEvent<E[K]>) => void | Promise<void>,
     options?: AddEventListenerOptionsLike,
   ): () => void {
     return this.#target.addEventListener(type, listener, options);
@@ -104,7 +105,7 @@ export abstract class Eventful<E extends Record<string, any>> {
    */
   removeEventListener<K extends keyof E & string>(
     type: K,
-    listener: (event: EventfulEvent<E[K]>) => void | Promise<void>,
+    listener: (event: EmissionEvent<E[K]>) => void | Promise<void>,
   ): void {
     this.#target.removeEventListener(type, listener);
   }
@@ -113,7 +114,7 @@ export abstract class Eventful<E extends Record<string, any>> {
    * Dispatches an event to all registered listeners.
    * Returns false if the emitter has been completed, true otherwise.
    */
-  dispatchEvent<K extends keyof E & string>(event: EventfulEvent<E[K]>): boolean {
+  dispatchEvent<K extends keyof E & string>(event: EmissionEvent<E[K]>): boolean {
     return this.#target.dispatchEvent(event);
   }
 
@@ -122,12 +123,22 @@ export abstract class Eventful<E extends Record<string, any>> {
   // ==========================================================================
 
   /**
+   * Returns an observable for the specified event type.
+   */
+  on<K extends keyof E & string>(
+    type: K,
+    options?: OnOptions | boolean,
+  ): ObservableLike<EmissionEvent<E[K]>> {
+    return this.#target.on(type, options);
+  }
+
+  /**
    * Adds a one-time listener for the specified event type.
    * Returns an unsubscribe function.
    */
   once<K extends keyof E & string>(
     type: K,
-    listener: (event: EventfulEvent<E[K]>) => void | Promise<void>,
+    listener: (event: EmissionEvent<E[K]>) => void | Promise<void>,
     options?: Omit<AddEventListenerOptionsLike, 'once'>,
   ): () => void {
     return this.#target.once(type, listener, options);
@@ -156,8 +167,8 @@ export abstract class Eventful<E extends Record<string, any>> {
   pipe<T extends Record<string, any>>(
     target: EventTargetLike<T>,
     mapFn?: <K extends keyof E & string>(
-      event: EventfulEvent<E[K]>,
-    ) => EventfulEvent<T[keyof T & string]> | null,
+      event: EmissionEvent<E[K]>,
+    ) => EmissionEvent<T[keyof T & string]> | null,
   ): () => void {
     return this.#target.pipe(target, mapFn);
   }
@@ -197,8 +208,8 @@ export abstract class Eventful<E extends Record<string, any>> {
    */
   subscribe(
     observerOrNext:
-      | Observer<EventfulEvent<E[keyof E]>>
-      | ((value: EventfulEvent<E[keyof E]>) => void),
+      | Observer<EmissionEvent<E[keyof E]>>
+      | ((value: EmissionEvent<E[keyof E]>) => void),
   ): Subscription;
 
   /**
@@ -207,8 +218,8 @@ export abstract class Eventful<E extends Record<string, any>> {
   subscribe<K extends keyof E & string>(
     type: K,
     observerOrNext?:
-      | Observer<EventfulEvent<E[K]>>
-      | ((value: EventfulEvent<E[K]>) => void),
+      | Observer<EmissionEvent<E[K]>>
+      | ((value: EmissionEvent<E[K]>) => void),
     error?: (err: unknown) => void,
     completeHandler?: () => void,
   ): Subscription;
@@ -219,11 +230,11 @@ export abstract class Eventful<E extends Record<string, any>> {
   subscribe<K extends keyof E & string>(
     typeOrObserver:
       | K
-      | Observer<EventfulEvent<E[keyof E]>>
-      | ((value: EventfulEvent<E[keyof E]>) => void),
+      | Observer<EmissionEvent<E[keyof E]>>
+      | ((value: EmissionEvent<E[keyof E]>) => void),
     observerOrNext?:
-      | Observer<EventfulEvent<E[K]>>
-      | ((value: EventfulEvent<E[K]>) => void),
+      | Observer<EmissionEvent<E[K]>>
+      | ((value: EmissionEvent<E[K]>) => void),
     error?: (err: unknown) => void,
     completeHandler?: () => void,
   ): Subscription {
@@ -266,14 +277,14 @@ export abstract class Eventful<E extends Record<string, any>> {
   /**
    * Returns an observable that emits all events.
    */
-  toObservable(): ObservableLike<EventfulEvent<E[keyof E]>> {
+  toObservable(): ObservableLike<EmissionEvent<E[keyof E]>> {
     return this.#target.toObservable();
   }
 
   /**
    * Returns this observable for Symbol.observable interop.
    */
-  [SymbolObservable](): ObservableLike<EventfulEvent<E[keyof E]>> {
+  [SymbolObservable](): ObservableLike<EmissionEvent<E[keyof E]>> {
     return this.toObservable();
   }
 
@@ -317,7 +328,7 @@ export abstract class Eventful<E extends Record<string, any>> {
   events<K extends keyof E & string>(
     type: K,
     options?: EventsIteratorOptions,
-  ): AsyncIterableIterator<EventfulEvent<E[K]>> {
+  ): AsyncIterableIterator<EmissionEvent<E[K]>> {
     return this.#target.events(type, options);
   }
 }

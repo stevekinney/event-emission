@@ -1,7 +1,7 @@
 /* eslint-disable @typescript-eslint/no-unsafe-assignment -- Proxy handlers require any spreads */
 /* eslint-disable @typescript-eslint/no-redundant-type-constituents -- Type unions are intentional for flexibility */
 
-import type { EventfulEvent, EventTargetLike } from './types';
+import type { EmissionEvent, EventTargetLike } from './types';
 
 // =============================================================================
 // DOM Type Stubs (for DOM-free environments)
@@ -32,10 +32,10 @@ declare function structuredClone<T>(value: T): T;
 // =============================================================================
 
 /** Symbol marking an object as proxied */
-export const PROXY_MARKER = Symbol.for('@lasercat/eventful/proxy');
+export const PROXY_MARKER = Symbol.for('@lasercat/event-emission/proxy');
 
 /** Symbol to access the original unproxied target */
-export const ORIGINAL_TARGET = Symbol.for('@lasercat/eventful/original');
+export const ORIGINAL_TARGET = Symbol.for('@lasercat/event-emission/original');
 
 // =============================================================================
 // Types
@@ -323,7 +323,7 @@ function createArrayMethodInterceptor<T extends object>(
         current: context.originalRoot,
         previous: previousState,
       },
-    } as EventfulEvent<ObservableEventMap<T>[keyof ObservableEventMap<T>]>);
+    } as EmissionEvent<ObservableEventMap<T>[keyof ObservableEventMap<T>]>);
 
     // Dispatch path event for the array itself (only if path is non-empty)
     if (path) {
@@ -334,7 +334,7 @@ function createArrayMethodInterceptor<T extends object>(
           current: context.originalRoot,
           previous: previousState,
         },
-      } as EventfulEvent<ObservableEventMap<T>[keyof ObservableEventMap<T>]>);
+      } as EmissionEvent<ObservableEventMap<T>[keyof ObservableEventMap<T>]>);
     }
 
     // Dispatch top-level update
@@ -344,7 +344,7 @@ function createArrayMethodInterceptor<T extends object>(
         current: context.originalRoot,
         previous: previousState,
       },
-    } as EventfulEvent<ObservableEventMap<T>[keyof ObservableEventMap<T>]>);
+    } as EmissionEvent<ObservableEventMap<T>[keyof ObservableEventMap<T>]>);
 
     return result;
   };
@@ -431,7 +431,7 @@ function createObservableProxyInternal<T extends object>(
             current: context.originalRoot,
             previous: previousState,
           },
-        } as EventfulEvent<ObservableEventMap<T>[keyof ObservableEventMap<T>]>);
+        } as EmissionEvent<ObservableEventMap<T>[keyof ObservableEventMap<T>]>);
 
         // Dispatch top-level update event
         context.eventTarget.dispatchEvent({
@@ -440,7 +440,7 @@ function createObservableProxyInternal<T extends object>(
             current: context.originalRoot,
             previous: previousState,
           },
-        } as EventfulEvent<ObservableEventMap<T>[keyof ObservableEventMap<T>]>);
+        } as EmissionEvent<ObservableEventMap<T>[keyof ObservableEventMap<T>]>);
       }
 
       return success;
@@ -470,7 +470,7 @@ function createObservableProxyInternal<T extends object>(
             current: context.originalRoot,
             previous: previousState,
           },
-        } as EventfulEvent<ObservableEventMap<T>[keyof ObservableEventMap<T>]>);
+        } as EmissionEvent<ObservableEventMap<T>[keyof ObservableEventMap<T>]>);
 
         // Dispatch top-level update event
         context.eventTarget.dispatchEvent({
@@ -479,7 +479,7 @@ function createObservableProxyInternal<T extends object>(
             current: context.originalRoot,
             previous: previousState,
           },
-        } as EventfulEvent<ObservableEventMap<T>[keyof ObservableEventMap<T>]>);
+        } as EmissionEvent<ObservableEventMap<T>[keyof ObservableEventMap<T>]>);
       }
 
       return success;
@@ -511,16 +511,16 @@ function isEventTarget(obj: unknown): obj is MinimalEventTarget {
 }
 
 /**
- * Sets up event forwarding from a source EventTarget to an Eventful target.
+ * Sets up event forwarding from a source EventTarget to an EventEmission target.
  *
- * This function enables integration between DOM EventTargets and Eventful targets.
+ * This function enables integration between DOM EventTargets and EventEmission targets.
  * When listeners are added to the target, corresponding forwarding handlers are
  * automatically registered on the source. Update events are not forwarded to
  * prevent circular event loops.
  *
  * @template T - The object type whose events are being forwarded.
  * @param source - The DOM EventTarget to forward events from.
- * @param target - The Eventful target to forward events to.
+ * @param target - The EventEmission target to forward events to.
  * @returns A cleanup function that removes all forwarding handlers when called.
  *
  * @example
@@ -550,7 +550,7 @@ export function setupEventForwarding<T extends object>(
     target.dispatchEvent({
       type: type as keyof ObservableEventMap<T> & string,
       detail,
-    } as EventfulEvent<ObservableEventMap<T>[keyof ObservableEventMap<T>]>);
+    } as EmissionEvent<ObservableEventMap<T>[keyof ObservableEventMap<T>]>);
   };
 
   // Save original method reference without mutating target
@@ -559,7 +559,7 @@ export function setupEventForwarding<T extends object>(
   // Create a wrapped addEventListener that also sets up forwarding
   const wrappedAddEventListener = ((
     type: string,
-    listener: (event: EventfulEvent<unknown>) => void | Promise<void>,
+    listener: (event: EmissionEvent<unknown>) => void | Promise<void>,
     options?: unknown,
   ) => {
     // Forward non-update events from source (lazily, once per type)
@@ -571,7 +571,7 @@ export function setupEventForwarding<T extends object>(
     return originalAddEventListener(
       type as keyof ObservableEventMap<T> & string,
       listener as (
-        event: EventfulEvent<ObservableEventMap<T>[keyof ObservableEventMap<T>]>,
+        event: EmissionEvent<ObservableEventMap<T>[keyof ObservableEventMap<T>]>,
       ) => void,
       options as Parameters<typeof originalAddEventListener>[2],
     );

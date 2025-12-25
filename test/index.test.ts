@@ -2,8 +2,8 @@ import { describe, expect, it } from 'bun:test';
 
 import {
   createEventTarget,
-  Eventful,
-  type EventfulEvent,
+  type EmissionEvent,
+  EventEmission,
   forwardToEventTarget,
   fromEventTarget,
   getOriginal,
@@ -19,7 +19,7 @@ describe('createEventTarget', () => {
   it('dispatches events to subscribed listeners', () => {
     type Events = { ready: { value: number } };
     const hub = createEventTarget<Events>();
-    let payload: EventfulEvent<Events['ready']> | null = null;
+    let payload: EmissionEvent<Events['ready']> | null = null;
 
     hub.addEventListener('ready', (event) => {
       payload = event;
@@ -792,7 +792,7 @@ describe('toObservable()', () => {
     // Access Symbol.observable directly on target
     const observable = (
       hub as unknown as {
-        [Symbol.observable]: () => { subscribe: (fn: (e: EventfulEvent<unknown>) => void) => void };
+        [Symbol.observable]: () => { subscribe: (fn: (e: EmissionEvent<unknown>) => void) => void };
       }
     )[Symbol.observable]();
 
@@ -999,8 +999,8 @@ describe('events() async iterator', () => {
   });
 });
 
-describe('Eventful abstract class', () => {
-  class TestEmitter extends Eventful<{ message: { text: string } }> {
+describe('EventEmission abstract class', () => {
+  class TestEmitter extends EventEmission<{ message: { text: string } }> {
     sendMessage(text: string) {
       this.dispatchEvent({ type: 'message', detail: { text } });
     }
@@ -1303,14 +1303,14 @@ describe('EventTarget interop', () => {
     expect(domTarget.dispatched).toHaveLength(1);
   });
 
-  it('fromEventTarget creates eventful from DOM target', () => {
+  it('fromEventTarget creates emitter from DOM target', () => {
     type Events = { input: string; change: string };
     const domTarget = createMockDOMEventTarget();
-    const eventful = fromEventTarget<Events>(domTarget, ['input', 'change']);
+    const emitter = fromEventTarget<Events>(domTarget, ['input', 'change']);
 
     const received: string[] = [];
-    eventful.addEventListener('input', (e) => received.push('input:' + e.detail));
-    eventful.addEventListener('change', (e) => received.push('change:' + e.detail));
+    emitter.addEventListener('input', (e) => received.push('input:' + e.detail));
+    emitter.addEventListener('change', (e) => received.push('change:' + e.detail));
 
     // Simulate DOM events
     domTarget.simulateEvent({ type: 'input', detail: 'hello' });
@@ -1318,36 +1318,36 @@ describe('EventTarget interop', () => {
 
     expect(received).toEqual(['input:hello', 'change:world']);
 
-    eventful.destroy();
+    emitter.destroy();
   });
 
   it('fromEventTarget destroy cleans up', () => {
     type Events = { click: number };
     const domTarget = createMockDOMEventTarget();
-    const eventful = fromEventTarget<Events>(domTarget, ['click']);
+    const emitter = fromEventTarget<Events>(domTarget, ['click']);
 
     expect(domTarget.listeners.size).toBe(1);
-    eventful.destroy();
+    emitter.destroy();
     expect(domTarget.listeners.size).toBe(0);
-    expect(eventful.completed).toBe(true);
+    expect(emitter.completed).toBe(true);
   });
 
   it('fromEventTarget respects abort signal', () => {
     type Events = { click: number };
     const domTarget = createMockDOMEventTarget();
     const { signal, abort } = createAbortSignal();
-    const eventful = fromEventTarget<Events>(domTarget, ['click'], { signal });
+    const emitter = fromEventTarget<Events>(domTarget, ['click'], { signal });
 
     const received: number[] = [];
-    eventful.addEventListener('click', (e) => received.push(e.detail));
+    emitter.addEventListener('click', (e) => received.push(e.detail));
 
     domTarget.simulateEvent({ type: 'click', detail: 1 });
     expect(received).toEqual([1]);
 
     abort();
 
-    // After abort, DOM listeners should be removed and eventful completed
-    expect(eventful.completed).toBe(true);
+    // After abort, DOM listeners should be removed and emitter completed
+    expect(emitter.completed).toBe(true);
     expect(domTarget.listeners.size).toBe(0);
 
     // New events should not be received
@@ -1361,13 +1361,13 @@ describe('EventTarget interop', () => {
     const { signal, abort } = createAbortSignal();
     abort(); // Abort before creating
 
-    const eventful = fromEventTarget<Events>(domTarget, ['click'], { signal });
+    const emitter = fromEventTarget<Events>(domTarget, ['click'], { signal });
 
-    expect(eventful.completed).toBe(true);
+    expect(emitter.completed).toBe(true);
     expect(domTarget.listeners.size).toBe(0);
   });
 
-  it('pipe forwards events between eventful targets', () => {
+  it('pipe forwards events between emitter targets', () => {
     type Events = { msg: string };
     const source = createEventTarget<Events>();
     const target = createEventTarget<Events>();

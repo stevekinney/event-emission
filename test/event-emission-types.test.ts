@@ -2,22 +2,22 @@
 import { describe, expectTypeOf,test } from 'bun:test';
 
 import {
-  Eventful,
-  type EventfulEvent,
+  type EmissionEvent,
+  EventEmission,
   type ObservableLike,
   type Observer,
   type Subscription,
 } from '../src/index';
 
 // Concrete implementation for type testing
-class TestEmitter extends Eventful<{
+class TestEmitter extends EventEmission<{
   foo: number;
   bar: string;
 }> {}
 
-describe('Eventful type compatibility', () => {
+describe('EventEmission type compatibility', () => {
   describe('DOM EventTarget compatibility', () => {
-    test('Eventful instance is assignable to EventTarget', () => {
+    test('EventEmission instance is assignable to EventTarget', () => {
       const emitter = new TestEmitter();
       expectTypeOf(emitter).toMatchTypeOf<EventTarget>();
     });
@@ -77,7 +77,7 @@ describe('Eventful type compatibility', () => {
 
     test('subscribe accepts Observer object', () => {
       const emitter = new TestEmitter();
-      const observer: Observer<EventfulEvent<number | string>> = {
+      const observer: Observer<EmissionEvent<number | string>> = {
         next: () => {},
         complete: () => {},
       };
@@ -87,7 +87,7 @@ describe('Eventful type compatibility', () => {
     test('Symbol.observable returns ObservableLike', () => {
       const emitter = new TestEmitter();
       expectTypeOf(emitter[Symbol.observable]()).toMatchTypeOf<
-        ObservableLike<EventfulEvent<number | string>>
+        ObservableLike<EmissionEvent<number | string>>
       >();
     });
   });
@@ -115,7 +115,7 @@ describe('Eventful type compatibility', () => {
     test('events returns AsyncIterableIterator', () => {
       const emitter = new TestEmitter();
       expectTypeOf(emitter.events('foo')).toMatchTypeOf<
-        AsyncIterableIterator<EventfulEvent<number>>
+        AsyncIterableIterator<EmissionEvent<number>>
       >();
     });
 

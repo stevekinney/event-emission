@@ -4,8 +4,8 @@ import { describe, expectTypeOf,test } from 'bun:test';
 import {
   type AsyncIteratorOptions,
   createEventTarget,
-  Eventful,
-  type EventfulEvent,
+  type EmissionEvent,
+  EventEmission,
   type EventTargetLike,
   forwardToEventTarget,
   fromEventTarget,
@@ -35,6 +35,23 @@ import {
  *   dispatchEvent(event: Event): boolean;
  * }
  */
+
+describe('EmissionEvent compatibility', () => {
+  test('EmissionEvent is a superset of DOM Event', () => {
+    // This confirms EmissionEvent has at least what Event has
+    expectTypeOf<EmissionEvent<unknown>>().toMatchTypeOf<Event>();
+  });
+
+  test('EmissionEvent has DOM Event properties', () => {
+    expectTypeOf<EmissionEvent<unknown>>().toHaveProperty('target');
+    expectTypeOf<EmissionEvent<unknown>>().toHaveProperty('preventDefault');
+  });
+
+  test('DOM Event is assignable to EmissionEvent (if detail is unknown)', () => {
+    // This confirms we can use a DOM Event where an EmissionEvent is expected
+    expectTypeOf<Event>().toMatchTypeOf<EmissionEvent<unknown>>();
+  });
+});
 
 describe('EventTargetLike implements DOM EventTarget', () => {
   type TestEvents = { ready: { value: number }; error: { message: string } };
@@ -152,7 +169,7 @@ describe('New ergonomics types', () => {
   test('events returns AsyncIterableIterator', () => {
     const target = createEventTarget<TestEvents>();
     const iter = target.events('ready');
-    expectTypeOf(iter).toMatchTypeOf<AsyncIterableIterator<EventfulEvent<TestEvents['ready']>>>();
+    expectTypeOf(iter).toMatchTypeOf<AsyncIterableIterator<EmissionEvent<TestEvents['ready']>>>();
   });
 });
 
@@ -187,16 +204,16 @@ describe('AsyncIteratorOptions type', () => {
   });
 });
 
-describe('Eventful abstract class types', () => {
+describe('EventEmission abstract class types', () => {
   type TestEvents = { ready: { value: number } };
 
-  class TestEmitter extends Eventful<TestEvents> {
+  class TestEmitter extends EventEmission<TestEvents> {
     sendReady(value: number) {
       this.dispatchEvent({ type: 'ready', detail: { value } });
     }
   }
 
-  test('Eventful subclass has all EventTarget methods', () => {
+  test('EventEmission subclass has all EventTarget methods', () => {
     expectTypeOf<TestEmitter>().toHaveProperty('addEventListener');
     expectTypeOf<TestEmitter>().toHaveProperty('removeEventListener');
     expectTypeOf<TestEmitter>().toHaveProperty('dispatchEvent');

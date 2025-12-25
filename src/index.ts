@@ -23,7 +23,7 @@ export type {
   AsyncIteratorOptions,
   DOMEventLike,
   DOMEventTargetLike,
-  EventfulEvent,
+  EmissionEvent,
   EventsIteratorOptions,
   EventTargetLike,
   InteropOptions,
@@ -63,9 +63,16 @@ export {
   setupEventForwarding,
 } from './observe';
 
+// Re-export Observable
+export type {
+  Subscriber,
+  SubscriptionObserverInterface as SubscriptionObserver,
+} from './observable';
+export { Observable } from './observable';
+
 // Re-export interop
 export type { FromEventTargetOptions } from './interop';
 export { forwardToEventTarget, fromEventTarget, pipe } from './interop';
 
-// Re-export Eventful class
-export { Eventful } from './eventful';
+// Re-export EventEmission class
+export { EventEmission } from './event-emission';

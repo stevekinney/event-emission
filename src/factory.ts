@@ -1,4 +1,5 @@
 import { BufferOverflowError } from './errors';
+import { Observable, type SubscriptionObserver } from './observable';
 import {
   createObservableProxy,
   type ObservableEventMap,
@@ -7,10 +8,12 @@ import {
 import { SymbolObservable } from './symbols';
 import type {
   AsyncIteratorOptions,
-  EventfulEvent,
+  EmissionEvent,
   EventTargetLike,
   Listener,
+  ObservableLike,
   Observer,
+  OnOptions,
   WildcardEvent,
   WildcardListener,
 } from './types';
@@ -165,6 +168,7 @@ export function createEventTarget<T extends object, E extends Record<string, any
       'removeEventListener',
       'dispatchEvent',
       'clear',
+      'on',
       'once',
       'removeAllListeners',
       'pipe',
@@ -210,6 +214,47 @@ function createEventTargetInternal<E extends Record<string, any>>(
   let isCompleted = false;
   const completionCallbacks = new Set<() => void>();
 
+  /**
+   * Helper to create a DOM-compatible augmented event.
+   */
+  const augmentEvent = <T>(type: string, detail: T): EmissionEvent<T> => {
+    const baseEvent = {
+      bubbles: false,
+      cancelable: false,
+      composed: false,
+      defaultPrevented: false,
+      eventPhase: 2, // AT_TARGET
+      isTrusted: false,
+      timeStamp: Date.now(),
+      NONE: 0,
+      CAPTURING_PHASE: 1,
+      AT_TARGET: 2,
+      BUBBLING_PHASE: 3,
+      composedPath: () => [target],
+      stopImmediatePropagation: () => {},
+      stopPropagation: () => {},
+    };
+
+    return Object.defineProperties(
+      { ...baseEvent, type, detail },
+      {
+        target: { value: target, enumerable: true, configurable: true },
+        currentTarget: { value: target, enumerable: true, configurable: true },
+        preventDefault: {
+          value: function (this: EmissionEvent<unknown>) {
+            Object.defineProperty(this, 'defaultPrevented', {
+              value: true,
+              enumerable: true,
+              configurable: true,
+            });
+          },
+          enumerable: true,
+          configurable: true,
+        },
+      },
+    ) as EmissionEvent<T>;
+  };
+
   // Helper to handle listener errors: emit 'error' event or re-throw if no listener
   const handleListenerError = (eventType: string, error: unknown) => {
     // Prevent infinite recursion if 'error' listener itself throws
@@ -224,9 +269,11 @@ function createEventTargetInternal<E extends Record<string, any>>(
     const errorListeners = listeners.get('error');
     if (errorListeners && errorListeners.size > 0) {
       // Emit 'error' event with the error as detail
+      const errorEvent = augmentEvent('error', error);
       for (const rec of Array.from(errorListeners)) {
         try {
-          void rec.fn({ type: 'error', detail: error } as EventfulEvent<E[keyof E]>);
+          const fn = rec.fn as (event: EmissionEvent<unknown>) => void | Promise<void>;
+          void fn(errorEvent as EmissionEvent<E[keyof E]>);
         } catch {
           // Swallow errors from error handlers to prevent infinite loops
         }
@@ -244,14 +291,15 @@ function createEventTargetInternal<E extends Record<string, any>>(
     for (const rec of Array.from(wildcardListeners)) {
       if (!matchesWildcard(eventType, rec.pattern)) continue;
 
-      const wildcardEvent: WildcardEvent<E> = {
-        type: rec.pattern,
-        originalType: eventType as keyof E & string,
-        detail,
-      };
+      // Create wildcard event based on augmented event
+      const baseAugmented = augmentEvent(rec.pattern, detail);
+      const wildcardEvent: WildcardEvent<E> = Object.defineProperties(baseAugmented, {
+        originalType: { value: eventType, enumerable: true, configurable: true },
+      }) as WildcardEvent<E>;
 
       try {
-        const res = rec.fn(wildcardEvent);
+        const fn = rec.fn as (event: WildcardEvent<E>) => void | Promise<void>;
+        const res = fn(wildcardEvent);
         if (res && typeof res.then === 'function') {
           res.catch((error) => {
             try {
@@ -361,6 +409,9 @@ function createEventTargetInternal<E extends Record<string, any>>(
   const dispatchEvent: EventTargetLike<E>['dispatchEvent'] = (event) => {
     if (isCompleted) return false;
 
+    // Augment event with DOM properties to ensure it's a superset of DOM Event
+    const augmentedEvent = augmentEvent(event.type, event.detail);
+
     // Notify wildcard listeners first (no overhead if none registered)
     notifyWildcardListeners(event.type, event.detail as E[keyof E]);
 
@@ -368,7 +419,7 @@ function createEventTargetInternal<E extends Record<string, any>>(
     if (!set || set.size === 0) return true;
     for (const rec of Array.from(set)) {
       try {
-        const res = rec.fn(event as EventfulEvent<E[keyof E]>);
+        const res = rec.fn(augmentedEvent as EmissionEvent<E[keyof E]>);
         if (res && typeof res.then === 'function') {
           res.catch((error) => {
             try {
@@ -433,7 +484,67 @@ function createEventTargetInternal<E extends Record<string, any>>(
 
   // New ergonomics
 
-  const once: EventTargetLike<E>['once'] = (type, listener, options) => {
+  const on: EventTargetLike<E>['on'] = (type, options) => {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    return new Observable<EmissionEvent<any>>(
+      (observer: SubscriptionObserver<EmissionEvent<any>>) => {
+        let opts: OnOptions;
+        if (typeof options === 'boolean') {
+          opts = { signal: undefined }; // Map boolean capture to options if needed, but our internal target doesn't use capture
+        } else {
+          opts = options ?? {};
+        }
+
+        const handler = opts.handler;
+        const once = opts.once;
+
+        const eventHandler = (e: EmissionEvent<unknown>) => {
+          let success = false;
+          try {
+            if (handler) {
+              handler(e);
+            }
+            observer.next(e);
+            success = true;
+          } finally {
+            if (once && success) {
+              observer.complete();
+            }
+          }
+        };
+
+        const errorHandler = (e: EmissionEvent<unknown>) => {
+          observer.error(e.detail);
+        };
+
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any, @typescript-eslint/no-unsafe-argument
+        const unsubscribeEvent = addEventListener(
+          type as keyof E & string,
+          eventHandler as any,
+          opts,
+        );
+
+        let unsubscribeError: (() => void) | undefined;
+        if (opts.receiveError) {
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any, @typescript-eslint/no-unsafe-argument
+          unsubscribeError = addEventListener(
+            'error' as keyof E & string,
+            errorHandler as any,
+            opts,
+          );
+        }
+
+        return () => {
+          unsubscribeEvent();
+          if (unsubscribeError) {
+            unsubscribeError();
+          }
+        };
+      },
+    );
+  };
+
+  const onceMethod: EventTargetLike<E>['once'] = (type, listener, options) => {
     return addEventListener(type, listener, { ...options, once: true });
   };
 
@@ -583,16 +694,16 @@ function createEventTargetInternal<E extends Record<string, any>>(
     error,
     completeHandler,
   ) => {
-    let observer: Observer<EventfulEvent<E[keyof E & string]>>;
+    let observer: Observer<EmissionEvent<E[keyof E & string]>>;
 
     if (typeof observerOrNext === 'function') {
       observer = {
-        next: observerOrNext as (value: EventfulEvent<E[keyof E & string]>) => void,
+        next: observerOrNext as (value: EmissionEvent<E[keyof E & string]>) => void,
         error,
         complete: completeHandler,
       };
     } else {
-      observer = (observerOrNext ?? {}) as Observer<EventfulEvent<E[keyof E & string]>>;
+      observer = (observerOrNext ?? {}) as Observer<EmissionEvent<E[keyof E & string]>>;
     }
 
     let closed = false;
@@ -620,7 +731,7 @@ function createEventTargetInternal<E extends Record<string, any>>(
       if (closed) return;
       if (observer.next) {
         try {
-          observer.next(event as EventfulEvent<E[keyof E & string]>);
+          observer.next(event as EmissionEvent<E[keyof E & string]>);
         } catch (err) {
           if (observer.error) {
             try {
@@ -661,120 +772,53 @@ function createEventTargetInternal<E extends Record<string, any>>(
   };
 
   const toObservable: EventTargetLike<E>['toObservable'] = () => {
-    const observable = {
-      subscribe: (
-        observerOrNext?:
-          | Observer<EventfulEvent<E[keyof E]>>
-          | ((value: EventfulEvent<E[keyof E]>) => void),
-        errorFn?: (error: unknown) => void,
-        completeFn?: () => void,
-      ) => {
-        // For the full observable, we listen to all events via wildcard
-        let next: ((value: EventfulEvent<E[keyof E]>) => void) | undefined;
-        let error: ((error: unknown) => void) | undefined;
-        let completeCallback: (() => void) | undefined;
-
-        if (typeof observerOrNext === 'function') {
-          next = observerOrNext;
-          error = errorFn;
-          completeCallback = completeFn;
-        } else if (observerOrNext) {
-          next = observerOrNext.next?.bind(observerOrNext);
-          error = observerOrNext.error?.bind(observerOrNext);
-          completeCallback = observerOrNext.complete?.bind(observerOrNext);
-        }
-
-        let closed = false;
-
+    return new Observable<EmissionEvent<E[keyof E]>>(
+      (observer: SubscriptionObserver<EmissionEvent<E[keyof E]>>) => {
         if (isCompleted) {
-          if (completeCallback) {
-            try {
-              completeCallback();
-            } catch {
-              // Swallow
-            }
-          }
-          return {
-            unsubscribe: () => {
-              closed = true;
-            },
-            get closed() {
-              return true;
-            },
-          };
+          observer.complete();
+          return;
         }
 
         const wildcardListener = (event: WildcardEvent<E>) => {
-          if (closed) return;
-          if (next) {
-            try {
-              next({ type: event.originalType, detail: event.detail });
-            } catch (err) {
-              if (error) {
-                try {
-                  error(err);
-                } catch {
-                  // Swallow
-                }
-              }
-            }
-          }
+          // Emit an augmented event with the actual type
+          observer.next(augmentEvent(event.originalType, event.detail));
         };
 
         const unsubscribe = addWildcardListener('*', wildcardListener);
 
         const onComplete = () => {
-          if (closed) return;
-          closed = true;
-          if (completeCallback) {
-            try {
-              completeCallback();
-            } catch {
-              // Swallow
-            }
-          }
+          observer.complete();
         };
         completionCallbacks.add(onComplete);
 
-        return {
-          unsubscribe: () => {
-            if (closed) return;
-            closed = true;
-            unsubscribe();
-            completionCallbacks.delete(onComplete);
-          },
-          get closed() {
-            return closed || isCompleted;
-          },
+        return () => {
+          unsubscribe();
+          completionCallbacks.delete(onComplete);
         };
       },
-      [SymbolObservable]() {
-        return observable;
-      },
-    };
-    return observable;
+    );
   };
 
   // Async iterator
   function events<K extends keyof E & string>(
     type: K,
     options?: AsyncIteratorOptions,
-  ): AsyncIterableIterator<EventfulEvent<E[K]>> {
+  ): AsyncIterableIterator<EmissionEvent<E[K]>> {
     // If already completed, return an iterator that immediately yields done
     if (isCompleted) {
       return {
         [Symbol.asyncIterator]() {
           return this;
         },
-        next(): Promise<IteratorResult<EventfulEvent<E[K]>>> {
+        next(): Promise<IteratorResult<EmissionEvent<E[K]>>> {
           return Promise.resolve({
-            value: undefined as unknown as EventfulEvent<E[K]>,
+            value: undefined as unknown as EmissionEvent<E[K]>,
             done: true,
           });
         },
-        return(): Promise<IteratorResult<EventfulEvent<E[K]>>> {
+        return(): Promise<IteratorResult<EmissionEvent<E[K]>>> {
           return Promise.resolve({
-            value: undefined as unknown as EventfulEvent<E[K]>,
+            value: undefined as unknown as EmissionEvent<E[K]>,
             done: true,
           });
         },
@@ -785,8 +829,8 @@ function createEventTargetInternal<E extends Record<string, any>>(
     const bufferSize = options?.bufferSize ?? Infinity;
     const overflowStrategy = options?.overflowStrategy ?? 'drop-oldest';
 
-    const buffer: Array<EventfulEvent<E[K]>> = [];
-    let resolve: ((result: IteratorResult<EventfulEvent<E[K]>>) => void) | null = null;
+    const buffer: Array<EmissionEvent<E[K]>> = [];
+    let resolve: ((result: IteratorResult<EmissionEvent<E[K]>>) => void) | null = null;
     let done = false;
     let hasOverflow = false;
 
@@ -828,7 +872,7 @@ function createEventTargetInternal<E extends Record<string, any>>(
       if (resolve) {
         const r = resolve;
         resolve = null;
-        r({ value: undefined as unknown as EventfulEvent<E[K]>, done: true });
+        r({ value: undefined as unknown as EmissionEvent<E[K]>, done: true });
       }
     };
     completionCallbacks.add(onComplete);
@@ -843,18 +887,18 @@ function createEventTargetInternal<E extends Record<string, any>>(
         if (resolve) {
           const r = resolve;
           resolve = null;
-          r({ value: undefined as unknown as EventfulEvent<E[K]>, done: true });
+          r({ value: undefined as unknown as EmissionEvent<E[K]>, done: true });
         }
       };
       signal.addEventListener('abort', onAbort, { once: true });
       if (signal.aborted) onAbort();
     }
 
-    const iterator: AsyncIterableIterator<EventfulEvent<E[K]>> = {
+    const iterator: AsyncIterableIterator<EmissionEvent<E[K]>> = {
       [Symbol.asyncIterator]() {
         return this;
       },
-      async next(): Promise<IteratorResult<EventfulEvent<E[K]>>> {
+      async next(): Promise<IteratorResult<EmissionEvent<E[K]>>> {
         // Drain buffered events first, even if done
         if (buffer.length > 0) {
           return { value: buffer.shift()!, done: false };
@@ -867,7 +911,7 @@ function createEventTargetInternal<E extends Record<string, any>>(
         }
 
         if (done) {
-          return { value: undefined as unknown as EventfulEvent<E[K]>, done: true };
+          return { value: undefined as unknown as EmissionEvent<E[K]>, done: true };
         }
 
         // Prevent concurrent next() calls - if there's already a pending promise, reject
@@ -880,9 +924,9 @@ function createEventTargetInternal<E extends Record<string, any>>(
         }
 
         // Wait for next event
-        return new Promise<IteratorResult<EventfulEvent<E[K]>>>((_resolve, _reject) => {
+        return new Promise<IteratorResult<EmissionEvent<E[K]>>>((_resolve, _reject) => {
           if (done) {
-            _resolve({ value: undefined as unknown as EventfulEvent<E[K]>, done: true });
+            _resolve({ value: undefined as unknown as EmissionEvent<E[K]>, done: true });
             return;
           }
           if (hasOverflow) {
@@ -893,12 +937,12 @@ function createEventTargetInternal<E extends Record<string, any>>(
           resolve = _resolve;
         });
       },
-      return(): Promise<IteratorResult<EventfulEvent<E[K]>>> {
+      return(): Promise<IteratorResult<EmissionEvent<E[K]>>> {
         // Resolve any pending promise before cleanup
         if (resolve) {
           const r = resolve;
           resolve = null;
-          r({ value: undefined as unknown as EventfulEvent<E[K]>, done: true });
+          r({ value: undefined as unknown as EmissionEvent<E[K]>, done: true });
         }
 
         done = true;
@@ -911,7 +955,7 @@ function createEventTargetInternal<E extends Record<string, any>>(
         }
 
         return Promise.resolve({
-          value: undefined as unknown as EventfulEvent<E[K]>,
+          value: undefined as unknown as EmissionEvent<E[K]>,
           done: true,
         });
       },
@@ -925,7 +969,8 @@ function createEventTargetInternal<E extends Record<string, any>>(
     removeEventListener,
     dispatchEvent,
     clear,
-    once,
+    on,
+    once: onceMethod,
     removeAllListeners,
     pipe,
     addWildcardListener,
@@ -940,7 +985,11 @@ function createEventTargetInternal<E extends Record<string, any>>(
   };
 
   // Add Symbol.observable - return an observable that emits all events from all types
-  (target as EventTargetLike<E> & { [key: symbol]: unknown })[SymbolObservable] = () => {
+  (
+    target as EventTargetLike<E> & {
+      [key: symbol]: () => ObservableLike<EmissionEvent<E[keyof E]>>;
+    }
+  )[SymbolObservable] = () => {
     return toObservable();
   };
 

@@ -8,21 +8,58 @@ declare global {
 
 /**
  * Event structure passed to listeners.
+ * Matches the shape of a DOM CustomEvent to ensure compatibility.
  */
-export interface EventfulEvent<Detail> {
+export interface EmissionEvent<Detail> {
   /** The event type identifier. */
-  type: string;
+  readonly type: string;
   /** The event payload data. */
-  detail: Detail;
+  readonly detail: Detail;
+
+  /** DOM Event compatibility: true if the event bubbles. */
+  readonly bubbles: boolean;
+  /** DOM Event compatibility: true if the event can be cancelled. */
+  readonly cancelable: boolean;
+  /** DOM Event compatibility: true if the event can cross Shadow DOM boundaries. */
+  readonly composed: boolean;
+  /** DOM Event compatibility: the object currently processing the event. */
+  readonly currentTarget: unknown;
+  /** DOM Event compatibility: true if preventDefault() has been called. */
+  readonly defaultPrevented: boolean;
+  /** DOM Event compatibility: the current phase of event propagation. */
+  readonly eventPhase: number;
+  /** DOM Event compatibility: true if the event was dispatched by the user agent. */
+  readonly isTrusted: boolean;
+  /** DOM Event compatibility: the object that originally dispatched the event. */
+  readonly target: unknown;
+  /** DOM Event compatibility: the time at which the event was created. */
+  readonly timeStamp: number;
+
+  /** DOM Event compatibility: returns the path of nodes the event will travel through. */
+  composedPath(): unknown[];
+  /** DOM Event compatibility: cancels the event if it is cancelable. */
+  preventDefault(): void;
+  /** DOM Event compatibility: prevents other listeners from being called. */
+  stopImmediatePropagation(): void;
+  /** DOM Event compatibility: prevents further propagation of the event. */
+  stopPropagation(): void;
+
+  // Event constants
+  readonly NONE: 0;
+  readonly CAPTURING_PHASE: 1;
+  readonly AT_TARGET: 2;
+  readonly BUBBLING_PHASE: 3;
 }
 
 /**
  * Event passed to wildcard listeners, includes the original event type.
  */
-export interface WildcardEvent<E extends Record<string, unknown>> {
-  type: '*' | `${string}:*`;
-  originalType: keyof E & string;
-  detail: E[keyof E];
+export interface WildcardEvent<E extends Record<string, unknown>> extends EmissionEvent<
+  E[keyof E]
+> {
+  readonly type: '*' | `${string}:*`;
+  readonly originalType: keyof E & string;
+  readonly detail: E[keyof E];
 }
 
 /**
@@ -47,6 +84,7 @@ export type AddEventListenerOptionsLike = {
  * TC39 Observable observer interface.
  */
 export interface Observer<T> {
+  start?: (subscription: Subscription) => void;
   next?: (value: T) => void;
   error?: (err: unknown) => void;
   complete?: () => void;
@@ -119,7 +157,7 @@ export interface DOMEventTargetLike {
  * Internal listener record type.
  */
 export type Listener<E> = {
-  fn: (event: EventfulEvent<E>) => void | Promise<void>;
+  fn: (event: EmissionEvent<E>) => void | Promise<void>;
   once?: boolean;
   signal?: MinimalAbortSignal;
   abortHandler?: () => void;
@@ -137,6 +175,20 @@ export type WildcardListener<E extends Record<string, unknown>> = {
 };
 
 /**
+ * Options for the on() method.
+ */
+export interface OnOptions extends AddEventListenerOptionsLike {
+  /** Listen for an "error" event and send it to the observer's error method. */
+  receiveError?: boolean;
+  /** Member indicates that the callback will not cancel the event. */
+  passive?: boolean;
+  /** Handler function called before the event is dispatched to observers. */
+  handler?: (event: EmissionEvent<unknown>) => void;
+  /** Member indicates that the Observable will complete after one event. */
+  once?: boolean;
+}
+
+/**
  * Type-safe event target interface compatible with DOM EventTarget
  * and TC39 Observable patterns.
  */
@@ -144,20 +196,24 @@ export type WildcardListener<E extends Record<string, unknown>> = {
 export interface EventTargetLike<E extends Record<string, any>> {
   addEventListener: <K extends keyof E & string>(
     type: K,
-    listener: (event: EventfulEvent<E[K]>) => void | Promise<void>,
+    listener: (event: EmissionEvent<E[K]>) => void | Promise<void>,
     options?: AddEventListenerOptionsLike,
   ) => () => void;
   removeEventListener: <K extends keyof E & string>(
     type: K,
-    listener: (event: EventfulEvent<E[K]>) => void | Promise<void>,
+    listener: (event: EmissionEvent<E[K]>) => void | Promise<void>,
   ) => void;
-  dispatchEvent: <K extends keyof E & string>(event: EventfulEvent<E[K]>) => boolean;
+  dispatchEvent: <K extends keyof E & string>(event: EmissionEvent<E[K]>) => boolean;
   clear: () => void;
 
   // Ergonomics
+  on: <K extends keyof E & string>(
+    type: K,
+    options?: OnOptions | boolean,
+  ) => ObservableLike<EmissionEvent<E[K]>>;
   once: <K extends keyof E & string>(
     type: K,
-    listener: (event: EventfulEvent<E[K]>) => void | Promise<void>,
+    listener: (event: EmissionEvent<E[K]>) => void | Promise<void>,
     options?: Omit<AddEventListenerOptionsLike, 'once'>,
   ) => () => void;
   removeAllListeners: <K extends keyof E & string>(type?: K) => void;
@@ -170,8 +226,8 @@ export interface EventTargetLike<E extends Record<string, any>> {
   pipe: <T extends Record<string, any>>(
     target: EventTargetLike<T>,
     mapFn?: <K extends keyof E & string>(
-      event: EventfulEvent<E[K]>,
-    ) => EventfulEvent<T[keyof T & string]> | null,
+      event: EmissionEvent<E[K]>,
+    ) => EmissionEvent<T[keyof T & string]> | null,
   ) => () => void;
   complete: () => void;
   readonly completed: boolean;
@@ -191,16 +247,16 @@ export interface EventTargetLike<E extends Record<string, any>> {
   subscribe: <K extends keyof E & string>(
     type: K,
     observerOrNext?:
-      | Observer<EventfulEvent<E[K]>>
-      | ((value: EventfulEvent<E[K]>) => void),
+      | Observer<EmissionEvent<E[K]>>
+      | ((value: EmissionEvent<E[K]>) => void),
     error?: (err: unknown) => void,
     complete?: () => void,
   ) => Subscription;
-  toObservable: () => ObservableLike<EventfulEvent<E[keyof E]>>;
+  toObservable: () => ObservableLike<EmissionEvent<E[keyof E]>>;
 
   // Async iterator
   events: <K extends keyof E & string>(
     type: K,
     options?: AsyncIteratorOptions,
-  ) => AsyncIterableIterator<EventfulEvent<E[K]>>;
+  ) => AsyncIterableIterator<EmissionEvent<E[K]>>;
 }
