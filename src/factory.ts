@@ -485,9 +485,10 @@ function createEventTargetInternal<E extends Record<string, any>>(
   // New ergonomics
 
   const on: EventTargetLike<E>['on'] = (type, options) => {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    /* eslint-disable @typescript-eslint/no-explicit-any */
     return new Observable<EmissionEvent<any>>(
       (observer: SubscriptionObserver<EmissionEvent<any>>) => {
+        /* eslint-enable @typescript-eslint/no-explicit-any */
         let opts: OnOptions;
         if (typeof options === 'boolean') {
           opts = { signal: undefined }; // Map boolean capture to options if needed, but our internal target doesn't use capture
@@ -517,7 +518,7 @@ function createEventTargetInternal<E extends Record<string, any>>(
           observer.error(e.detail);
         };
 
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any, @typescript-eslint/no-unsafe-argument
+        /* eslint-disable @typescript-eslint/no-explicit-any, @typescript-eslint/no-unsafe-argument */
         const unsubscribeEvent = addEventListener(
           type as keyof E & string,
           eventHandler as any,
@@ -526,13 +527,13 @@ function createEventTargetInternal<E extends Record<string, any>>(
 
         let unsubscribeError: (() => void) | undefined;
         if (opts.receiveError) {
-          // eslint-disable-next-line @typescript-eslint/no-explicit-any, @typescript-eslint/no-unsafe-argument
           unsubscribeError = addEventListener(
             'error' as keyof E & string,
             errorHandler as any,
             opts,
           );
         }
+        /* eslint-enable @typescript-eslint/no-explicit-any, @typescript-eslint/no-unsafe-argument */
 
         return () => {
           unsubscribeEvent();
