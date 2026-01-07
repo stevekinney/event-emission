@@ -7,6 +7,7 @@ import {
 } from './observe';
 import { SymbolObservable } from './symbols';
 import type {
+  AddEventListenerOptionsLike,
   AsyncIteratorOptions,
   EmissionEvent,
   EventTargetLike,
@@ -23,12 +24,39 @@ import type {
  */
 function matchesWildcard(eventType: string, pattern: string): boolean {
   if (pattern === '*') return true;
-  if (pattern.endsWith(':*')) {
-    const namespace = pattern.slice(0, -2);
-    return eventType.startsWith(namespace + ':');
-  }
-  return false;
+  return pattern.endsWith(':*') && eventType.startsWith(pattern.slice(0, -2) + ':');
 }
+
+type EventPathStruct = {
+  invocationTarget: unknown;
+  invocationTargetInShadowTree: boolean;
+  shadowAdjustedTarget: unknown;
+  relatedTarget: unknown;
+  touchTargets: unknown[];
+  rootOfClosedTree: boolean;
+  slotInClosedTree: boolean;
+};
+
+type EventDispatchState = {
+  dispatchFlag: boolean;
+  initializedFlag: boolean;
+  stopPropagationFlag: boolean;
+  stopImmediatePropagationFlag: boolean;
+  canceledFlag: boolean;
+  inPassiveListenerFlag: boolean;
+  composedFlag: boolean;
+  eventPhase: number;
+  currentTarget: unknown;
+  target: unknown;
+  timeStamp: number;
+  path: EventPathStruct[];
+  type: string;
+  bubbles: boolean;
+  cancelable: boolean;
+  isTrusted: boolean;
+};
+
+const EVENT_STATE = Symbol('event-emission:event-state');
 
 /**
  * Options for createEventTarget.
@@ -46,7 +74,7 @@ export interface CreateEventTargetOptions {
  * Extends CreateEventTargetOptions with proxy observation settings.
  *
  * @property observe - Must be true to enable observation mode.
- * @property deep - If true, nested objects are also observed (default: false).
+ * @property deep - If true, nested objects are also observed (default: true).
  * @property cloneStrategy - Strategy for cloning previous state: 'shallow', 'deep', or 'path'.
  */
 export interface CreateEventTargetObserveOptions
@@ -159,6 +187,7 @@ export function createEventTarget<T extends object, E extends Record<string, any
     const proxy = createObservableProxy(target, eventTarget, {
       deep: opts.deep,
       cloneStrategy: opts.cloneStrategy,
+      deepClone: opts.deepClone,
     });
 
     // Copy eventTarget methods onto the proxy
@@ -209,50 +238,238 @@ export function createEventTarget<T extends object, E extends Record<string, any
 function createEventTargetInternal<E extends Record<string, any>>(
   opts?: CreateEventTargetOptions,
 ): EventTargetLike<E> {
-  const listeners = new Map<string, Set<Listener<E[keyof E]>>>();
+  const listeners = new Map<string, Array<Listener<E[keyof E]>>>();
   const wildcardListeners = new Set<WildcardListener<E>>();
   let isCompleted = false;
   const completionCallbacks = new Set<() => void>();
 
+  const now = () =>
+    typeof globalThis.performance?.now === 'function'
+      ? globalThis.performance.now()
+      : Date.now();
+
+  const initializeEventState = (
+    state: EventDispatchState,
+    type: string,
+    bubbles: boolean,
+    cancelable: boolean,
+  ) => {
+    state.initializedFlag = true;
+    state.stopPropagationFlag = false;
+    state.stopImmediatePropagationFlag = false;
+    state.canceledFlag = false;
+    state.isTrusted = false;
+    state.target = null;
+    state.currentTarget = null;
+    state.eventPhase = 0;
+    state.type = type;
+    state.bubbles = bubbles;
+    state.cancelable = cancelable;
+  };
+
+  const setCanceledFlag = (state: EventDispatchState) => {
+    if (state.cancelable && !state.inPassiveListenerFlag) {
+      state.canceledFlag = true;
+    }
+  };
+
   /**
-   * Helper to create a DOM-compatible augmented event.
+   * Helper to create a DOM-compatible event.
    */
-  const augmentEvent = <T>(type: string, detail: T): EmissionEvent<T> => {
-    const baseEvent = {
-      bubbles: false,
-      cancelable: false,
-      composed: false,
-      defaultPrevented: false,
-      eventPhase: 2, // AT_TARGET
+  const createEvent = <T>(
+    type: string,
+    detail: T,
+    init?: {
+      bubbles?: boolean;
+      cancelable?: boolean;
+      composed?: boolean;
+      timeStamp?: number;
+      target?: unknown;
+      currentTarget?: unknown;
+      eventPhase?: number;
+    },
+  ): EmissionEvent<T> => {
+    const state: EventDispatchState = {
+      dispatchFlag: false,
+      initializedFlag: true,
+      stopPropagationFlag: false,
+      stopImmediatePropagationFlag: false,
+      canceledFlag: false,
+      inPassiveListenerFlag: false,
+      composedFlag: Boolean(init?.composed),
+      eventPhase: init?.eventPhase ?? 0,
+      currentTarget: init?.currentTarget ?? init?.target ?? null,
+      target: init?.target ?? null,
+      timeStamp: init?.timeStamp ?? now(),
+      path: [],
+      type,
+      bubbles: Boolean(init?.bubbles),
+      cancelable: Boolean(init?.cancelable),
       isTrusted: false,
-      timeStamp: Date.now(),
-      NONE: 0,
-      CAPTURING_PHASE: 1,
-      AT_TARGET: 2,
-      BUBBLING_PHASE: 3,
-      composedPath: () => [target],
-      stopImmediatePropagation: () => {},
-      stopPropagation: () => {},
     };
 
-    return Object.defineProperties(
-      { ...baseEvent, type, detail },
-      {
-        target: { value: target, enumerable: true, configurable: true },
-        currentTarget: { value: target, enumerable: true, configurable: true },
-        preventDefault: {
-          value: function (this: EmissionEvent<unknown>) {
-            Object.defineProperty(this, 'defaultPrevented', {
-              value: true,
-              enumerable: true,
-              configurable: true,
-            });
-          },
-          enumerable: true,
-          configurable: true,
-        },
+    const event = { detail } as EmissionEvent<T>;
+    Object.defineProperties(event, {
+      type: {
+        get: () => state.type,
+        enumerable: true,
+        configurable: true,
       },
-    ) as EmissionEvent<T>;
+      bubbles: {
+        get: () => state.bubbles,
+        enumerable: true,
+        configurable: true,
+      },
+      cancelable: {
+        get: () => state.cancelable,
+        enumerable: true,
+        configurable: true,
+      },
+      cancelBubble: {
+        get: () => state.stopPropagationFlag,
+        set: (value: boolean) => {
+          if (value) state.stopPropagationFlag = true;
+        },
+        enumerable: true,
+        configurable: true,
+      },
+      composed: {
+        get: () => state.composedFlag,
+        enumerable: true,
+        configurable: true,
+      },
+      currentTarget: {
+        get: () => state.currentTarget,
+        enumerable: true,
+        configurable: true,
+      },
+      defaultPrevented: {
+        get: () => state.canceledFlag,
+        enumerable: true,
+        configurable: true,
+      },
+      eventPhase: {
+        get: () => state.eventPhase,
+        enumerable: true,
+        configurable: true,
+      },
+      isTrusted: {
+        get: () => state.isTrusted,
+        enumerable: true,
+        configurable: true,
+      },
+      returnValue: {
+        get: () => !state.canceledFlag,
+        set: (value: boolean) => {
+          if (value === false) setCanceledFlag(state);
+        },
+        enumerable: true,
+        configurable: true,
+      },
+      srcElement: {
+        get: () => state.target,
+        enumerable: true,
+        configurable: true,
+      },
+      target: {
+        get: () => state.target,
+        enumerable: true,
+        configurable: true,
+      },
+      timeStamp: {
+        get: () => state.timeStamp,
+        enumerable: true,
+        configurable: true,
+      },
+      composedPath: {
+        value: () => state.path.map((entry) => entry.invocationTarget),
+        enumerable: true,
+        configurable: true,
+      },
+      initEvent: {
+        value: (newType: string, bubbles = false, cancelable = false) => {
+          if (state.dispatchFlag) return;
+          initializeEventState(state, newType, Boolean(bubbles), Boolean(cancelable));
+        },
+        enumerable: true,
+        configurable: true,
+      },
+      preventDefault: {
+        value: () => setCanceledFlag(state),
+        enumerable: true,
+        configurable: true,
+      },
+      stopImmediatePropagation: {
+        value: () => {
+          state.stopPropagationFlag = true;
+          state.stopImmediatePropagationFlag = true;
+        },
+        enumerable: true,
+        configurable: true,
+      },
+      stopPropagation: {
+        value: () => {
+          state.stopPropagationFlag = true;
+        },
+        enumerable: true,
+        configurable: true,
+      },
+      NONE: { value: 0, enumerable: true, configurable: true },
+      CAPTURING_PHASE: { value: 1, enumerable: true, configurable: true },
+      AT_TARGET: { value: 2, enumerable: true, configurable: true },
+      BUBBLING_PHASE: { value: 3, enumerable: true, configurable: true },
+      [EVENT_STATE]: {
+        value: state,
+        enumerable: false,
+        configurable: false,
+      },
+    });
+
+    return event;
+  };
+
+  const getEventState = (event: EmissionEvent<unknown>): EventDispatchState | undefined =>
+    (event as { [EVENT_STATE]?: EventDispatchState })[EVENT_STATE];
+
+  const normalizeAddListenerOptions = (
+    options?: AddEventListenerOptionsLike | boolean,
+  ) => {
+    if (typeof options === 'boolean') {
+      return {
+        capture: options,
+        passive: false,
+        once: false,
+        signal: null as AddEventListenerOptionsLike['signal'] | null,
+      };
+    }
+
+    return {
+      capture: Boolean(options?.capture),
+      passive: Boolean(options?.passive),
+      once: Boolean(options?.once),
+      signal: options?.signal ?? null,
+    };
+  };
+
+  const normalizeCaptureOption = (options?: { capture?: boolean } | boolean) => {
+    if (typeof options === 'boolean') return options;
+    return Boolean(options?.capture);
+  };
+
+  const removeListenerRecord = (type: string, record: Listener<E[keyof E]>) => {
+    if (record.removed) return;
+    record.removed = true;
+
+    const list = listeners.get(type);
+    if (list) {
+      const idx = list.indexOf(record);
+      if (idx >= 0) list.splice(idx, 1);
+      if (list.length === 0) listeners.delete(type);
+    }
+
+    if (record.signal && record.abortHandler) {
+      record.signal.removeEventListener('abort', record.abortHandler);
+    }
   };
 
   // Helper to handle listener errors: emit 'error' event or re-throw if no listener
@@ -267,33 +484,35 @@ function createEventTargetInternal<E extends Record<string, any>>(
     }
 
     const errorListeners = listeners.get('error');
-    if (errorListeners && errorListeners.size > 0) {
-      // Emit 'error' event with the error as detail
-      const errorEvent = augmentEvent('error', error);
-      for (const rec of Array.from(errorListeners)) {
-        try {
-          const fn = rec.fn as (event: EmissionEvent<unknown>) => void | Promise<void>;
-          void fn(errorEvent as EmissionEvent<E[keyof E]>);
-        } catch {
-          // Swallow errors from error handlers to prevent infinite loops
-        }
-        if (rec.once) errorListeners.delete(rec);
-      }
+    if (errorListeners && errorListeners.length > 0) {
+      dispatchEvent({ type: 'error', detail: error } as Parameters<
+        EventTargetLike<E>['dispatchEvent']
+      >[0]);
     } else {
       // No 'error' listener - re-throw (Node.js behavior)
       throw error;
     }
   };
 
-  const notifyWildcardListeners = (eventType: string, detail: E[keyof E]) => {
+  const notifyWildcardListeners = (
+    eventType: string,
+    event: EmissionEvent<E[keyof E]>,
+  ) => {
     if (wildcardListeners.size === 0) return;
 
     for (const rec of Array.from(wildcardListeners)) {
       if (!matchesWildcard(eventType, rec.pattern)) continue;
 
-      // Create wildcard event based on augmented event
-      const baseAugmented = augmentEvent(rec.pattern, detail);
-      const wildcardEvent: WildcardEvent<E> = Object.defineProperties(baseAugmented, {
+      // Create wildcard event based on a DOM-compatible event
+      const baseEvent = createEvent(rec.pattern, event.detail, {
+        target,
+        currentTarget: target,
+        eventPhase: 2,
+        bubbles: event.bubbles,
+        cancelable: event.cancelable,
+        composed: event.composed,
+      });
+      const wildcardEvent: WildcardEvent<E> = Object.defineProperties(baseEvent, {
         originalType: { value: eventType, enumerable: true, configurable: true },
       }) as WildcardEvent<E>;
 
@@ -317,6 +536,11 @@ function createEventTargetInternal<E extends Record<string, any>>(
       } finally {
         if (rec.once) wildcardListeners.delete(rec);
       }
+
+      const state = getEventState(wildcardEvent);
+      if (state?.stopImmediatePropagationFlag || state?.stopPropagationFlag) {
+        break;
+      }
     }
   };
 
@@ -325,36 +549,57 @@ function createEventTargetInternal<E extends Record<string, any>>(
     listener,
     options,
   ) => {
-    if (isCompleted) {
+    if (isCompleted || !listener) {
       // Return no-op unsubscribe if already completed
       return () => {};
     }
 
-    const opts2 = options ?? {};
-    const record: Listener<E[keyof E]> = {
-      fn: listener as Listener<E[keyof E]>['fn'],
-      once: opts2.once,
-      signal: opts2.signal,
-    };
-    let set = listeners.get(type);
-    if (!set) {
-      set = new Set();
-      listeners.set(type, set);
+    const { capture, passive, once, signal } = normalizeAddListenerOptions(options);
+    let list = listeners.get(type);
+    if (!list) {
+      list = [];
+      listeners.set(type, list);
     }
-    set.add(record);
-    const unsubscribe = () => {
-      const setNow = listeners.get(type);
-      setNow?.delete(record);
-      if (record.signal && record.abortHandler) {
-        record.signal.removeEventListener('abort', record.abortHandler);
+
+    for (const existing of list) {
+      if (existing.original === listener && existing.capture === capture) {
+        return () =>
+          removeEventListener(type, listener, options as boolean | { capture?: boolean });
       }
-    };
-    if (opts2.signal) {
-      const onAbort = () => unsubscribe();
-      record.abortHandler = onAbort;
-      opts2.signal.addEventListener('abort', onAbort, { once: true });
-      if (opts2.signal.aborted) onAbort();
     }
+
+    const original = listener as Listener<E[keyof E]>['original'];
+    const callback =
+      typeof listener === 'function'
+        ? (listener as Listener<E[keyof E]>['callback'])
+        : (event: EmissionEvent<E[keyof E]>) =>
+            (
+              listener as {
+                handleEvent: Listener<E[keyof E]>['callback'];
+              }
+            ).handleEvent(event);
+
+    const record: Listener<E[keyof E]> = {
+      type,
+      original,
+      callback,
+      capture,
+      passive,
+      once,
+      signal,
+      removed: false,
+    };
+    list.push(record);
+
+    const unsubscribe = () => removeListenerRecord(type, record);
+
+    if (signal) {
+      const onAbort = () => removeListenerRecord(type, record);
+      record.abortHandler = onAbort;
+      signal.addEventListener('abort', onAbort, { once: true });
+      if (signal.aborted) onAbort();
+    }
+
     return unsubscribe;
   };
 
@@ -366,6 +611,11 @@ function createEventTargetInternal<E extends Record<string, any>>(
     if (isCompleted) return () => {};
 
     const opts2 = options ?? {};
+    for (const existing of wildcardListeners) {
+      if (existing.pattern === pattern && existing.fn === listener) {
+        return () => removeWildcardListener(pattern, listener);
+      }
+    }
     const record: WildcardListener<E> = {
       fn: listener,
       pattern,
@@ -395,37 +645,44 @@ function createEventTargetInternal<E extends Record<string, any>>(
     pattern,
     listener,
   ) => {
-    for (const record of wildcardListeners) {
+    for (const record of Array.from(wildcardListeners)) {
       if (record.pattern === pattern && record.fn === listener) {
         wildcardListeners.delete(record);
         if (record.signal && record.abortHandler) {
           record.signal.removeEventListener('abort', record.abortHandler);
         }
-        break;
       }
     }
   };
 
-  const dispatchEvent: EventTargetLike<E>['dispatchEvent'] = (event) => {
-    if (isCompleted) return false;
+  const invokeListeners = (
+    eventType: string,
+    event: EmissionEvent<E[keyof E]>,
+    phase: 'capturing' | 'bubbling',
+    listenersSnapshot: Array<Listener<E[keyof E]>>,
+  ) => {
+    const state = getEventState(event);
+    if (!state || state.stopPropagationFlag) return;
 
-    // Augment event with DOM properties to ensure it's a superset of DOM Event
-    const augmentedEvent = augmentEvent(event.type, event.detail);
+    state.currentTarget = target;
+    state.target = target;
+    state.eventPhase = event.AT_TARGET;
 
-    // Notify wildcard listeners first (no overhead if none registered)
-    notifyWildcardListeners(event.type, event.detail as E[keyof E]);
+    for (const rec of listenersSnapshot) {
+      if (rec.removed) continue;
+      if (phase === 'capturing' && !rec.capture) continue;
+      if (phase === 'bubbling' && rec.capture) continue;
 
-    const set = listeners.get(event.type);
-    if (!set || set.size === 0) return true;
-    for (const rec of Array.from(set)) {
+      if (rec.once) removeListenerRecord(rec.type, rec);
+
+      if (rec.passive) state.inPassiveListenerFlag = true;
       try {
-        const res = rec.fn(augmentedEvent as EmissionEvent<E[keyof E]>);
+        const res = rec.callback.call(state.currentTarget, event);
         if (res && typeof res.then === 'function') {
           res.catch((error) => {
             try {
-              handleListenerError(event.type, error);
+              handleListenerError(eventType, error);
             } catch (rethrown) {
-              // Re-throw async errors via queueMicrotask to preserve stack trace
               queueMicrotask(() => {
                 throw rethrown;
               });
@@ -433,41 +690,116 @@ function createEventTargetInternal<E extends Record<string, any>>(
           });
         }
       } catch (error) {
-        handleListenerError(event.type, error);
+        handleListenerError(eventType, error);
       } finally {
-        if (rec.once) set.delete(rec);
+        if (rec.passive) state.inPassiveListenerFlag = false;
       }
+
+      if (state.stopImmediatePropagationFlag) break;
     }
-    return true;
+  };
+
+  const dispatchEvent: EventTargetLike<E>['dispatchEvent'] = (eventInput) => {
+    if (isCompleted) return false;
+
+    let event: EmissionEvent<E[keyof E]>;
+    let state: EventDispatchState | undefined;
+
+    if (eventInput && typeof eventInput === 'object') {
+      state = getEventState(eventInput as EmissionEvent<unknown>);
+      if (state) {
+        event = eventInput as EmissionEvent<E[keyof E]>;
+      } else {
+        const input = eventInput as {
+          type: string;
+          detail?: E[keyof E];
+          bubbles?: boolean;
+          cancelable?: boolean;
+          composed?: boolean;
+          timeStamp?: number;
+        };
+        if (typeof input.type !== 'string') {
+          throw new TypeError('Event type must be a string');
+        }
+        event = createEvent(input.type, input.detail as E[keyof E], {
+          bubbles: input.bubbles,
+          cancelable: input.cancelable,
+          composed: input.composed,
+          timeStamp: input.timeStamp,
+        });
+        state = getEventState(event)!;
+      }
+    } else {
+      throw new TypeError('dispatchEvent expects an event object');
+    }
+
+    const dispatchState = state ?? getEventState(event)!;
+
+    if (dispatchState.dispatchFlag || !dispatchState.initializedFlag) {
+      const message =
+        'Failed to execute dispatchEvent: event is already being dispatched';
+      if (typeof globalThis.DOMException === 'function') {
+        throw new globalThis.DOMException(message, 'InvalidStateError');
+      }
+      const err = new Error(message);
+      err.name = 'InvalidStateError';
+      throw err;
+    }
+
+    dispatchState.isTrusted = false;
+    dispatchState.dispatchFlag = true;
+    dispatchState.path = [
+      {
+        invocationTarget: target,
+        invocationTargetInShadowTree: false,
+        shadowAdjustedTarget: target,
+        relatedTarget: null,
+        touchTargets: [],
+        rootOfClosedTree: false,
+        slotInClosedTree: false,
+      },
+    ];
+
+    // Notify wildcard listeners first (no overhead if none registered)
+    notifyWildcardListeners(dispatchState.type, event);
+
+    const list = listeners.get(dispatchState.type);
+    const snapshot = list ? list.slice() : [];
+    invokeListeners(dispatchState.type, event, 'capturing', snapshot);
+    invokeListeners(dispatchState.type, event, 'bubbling', snapshot);
+
+    dispatchState.eventPhase = event.NONE;
+    dispatchState.currentTarget = null;
+    dispatchState.path = [];
+    dispatchState.dispatchFlag = false;
+    dispatchState.stopPropagationFlag = false;
+    dispatchState.stopImmediatePropagationFlag = false;
+
+    return !dispatchState.canceledFlag;
   };
 
   const removeEventListener: EventTargetLike<E>['removeEventListener'] = (
     type,
     listener,
+    options,
   ) => {
-    const set = listeners.get(type);
-    if (!set) return;
+    if (!listener) return;
+    const capture = normalizeCaptureOption(options);
+    const list = listeners.get(type);
+    if (!list) return;
 
-    for (const record of set) {
-      if (record.fn === listener) {
-        set.delete(record);
-        if (record.signal && record.abortHandler) {
-          record.signal.removeEventListener('abort', record.abortHandler);
-        }
-        break;
+    for (const record of [...list]) {
+      if (record.original === listener && record.capture === capture) {
+        removeListenerRecord(type, record);
       }
     }
   };
 
   const clear = () => {
-    // Clean up abort handlers before clearing
-    for (const set of listeners.values()) {
-      for (const record of set) {
-        if (record.signal && record.abortHandler) {
-          record.signal.removeEventListener('abort', record.abortHandler);
-        }
+    for (const [type, list] of Array.from(listeners.entries())) {
+      for (const record of [...list]) {
+        removeListenerRecord(type, record);
       }
-      set.clear();
     }
     listeners.clear();
 
@@ -491,7 +823,7 @@ function createEventTargetInternal<E extends Record<string, any>>(
         /* eslint-enable @typescript-eslint/no-explicit-any */
         let opts: OnOptions;
         if (typeof options === 'boolean') {
-          opts = { signal: undefined }; // Map boolean capture to options if needed, but our internal target doesn't use capture
+          opts = { capture: options };
         } else {
           opts = options ?? {};
         }
@@ -546,31 +878,27 @@ function createEventTargetInternal<E extends Record<string, any>>(
   };
 
   const onceMethod: EventTargetLike<E>['once'] = (type, listener, options) => {
-    return addEventListener(type, listener, { ...options, once: true });
+    if (typeof options === 'boolean') {
+      return addEventListener(type, listener, { capture: options, once: true });
+    }
+    return addEventListener(type, listener, { ...(options ?? {}), once: true });
   };
 
   const removeAllListeners: EventTargetLike<E>['removeAllListeners'] = (type) => {
     if (type !== undefined) {
-      const set = listeners.get(type);
-      if (set) {
-        // Clean up abort handlers before clearing
-        for (const record of set) {
-          if (record.signal && record.abortHandler) {
-            record.signal.removeEventListener('abort', record.abortHandler);
-          }
+      const list = listeners.get(type);
+      if (list) {
+        for (const record of [...list]) {
+          removeListenerRecord(type, record);
         }
-        set.clear();
         listeners.delete(type);
       }
     } else {
       // Clear all listeners for all types
-      for (const set of listeners.values()) {
-        for (const record of set) {
-          if (record.signal && record.abortHandler) {
-            record.signal.removeEventListener('abort', record.abortHandler);
-          }
+      for (const [eventType, list] of Array.from(listeners.entries())) {
+        for (const record of [...list]) {
+          removeListenerRecord(eventType, record);
         }
-        set.clear();
       }
       listeners.clear();
 
@@ -587,64 +915,49 @@ function createEventTargetInternal<E extends Record<string, any>>(
   /**
    * Pipe events from this emitter to another target.
    *
-   * **Limitation**: Only forwards events for types that already have listeners
-   * when pipe() is called. Events for types registered afterward won't be piped.
-   *
-   * To ensure all events are piped, add at least one listener for each event type
-   * before calling pipe().
+   * Forwards all events. If mapFn returns null, the event is skipped.
    */
   const pipe: EventTargetLike<E>['pipe'] = (target, mapFn) => {
     if (isCompleted) {
       return () => {};
     }
 
-    const unsubscribes: Array<() => void> = [];
-
-    // Subscribe to all current and future events by listening to each event type
-    // We need to track event types we've subscribed to
-    const subscribedTypes = new Set<string>();
-
-    const subscribeToType = (type: string) => {
-      if (subscribedTypes.has(type)) return;
-      subscribedTypes.add(type);
-
-      const unsub = addEventListener(type as keyof E & string, (event) => {
-        if (mapFn) {
-          const mapped = mapFn(event);
-          if (mapped !== null) {
-            // Type assertion via unknown is needed because mapFn output type matches target's event map
-            target.dispatchEvent(
-              mapped as unknown as Parameters<typeof target.dispatchEvent>[0],
-            );
-          }
-        } else {
-          // Type assertion via unknown is needed because caller ensures E and T are compatible
+    const unsubscribe = addWildcardListener('*', (event) => {
+      if (mapFn) {
+        const mapped = mapFn(
+          createEvent(event.originalType, event.detail, {
+            target,
+            currentTarget: target,
+            eventPhase: 2,
+            bubbles: event.bubbles,
+            cancelable: event.cancelable,
+            composed: event.composed,
+          }) as EmissionEvent<E[keyof E & string], keyof E & string>,
+        );
+        if (mapped !== null) {
+          // Type assertion via unknown is needed because mapFn output type matches target's event map
           target.dispatchEvent(
-            event as unknown as Parameters<typeof target.dispatchEvent>[0],
+            mapped as unknown as Parameters<typeof target.dispatchEvent>[0],
           );
         }
-      });
-      unsubscribes.push(unsub);
-    };
-
-    // Subscribe to all existing event types
-    for (const type of listeners.keys()) {
-      subscribeToType(type);
-    }
+      } else {
+        // Type assertion via unknown is needed because caller ensures E and T are compatible
+        target.dispatchEvent({
+          type: event.originalType,
+          detail: event.detail,
+        } as unknown as Parameters<typeof target.dispatchEvent>[0]);
+      }
+    });
 
     // Clean up on completion
     const completionUnsub = () => {
-      for (const unsub of unsubscribes) {
-        unsub();
-      }
+      unsubscribe();
     };
     completionCallbacks.add(completionUnsub);
 
     return () => {
       completionCallbacks.delete(completionUnsub);
-      for (const unsub of unsubscribes) {
-        unsub();
-      }
+      unsubscribe();
     };
   };
 
@@ -669,13 +982,10 @@ function createEventTargetInternal<E extends Record<string, any>>(
     completionCallbacks.clear();
 
     // Clear all listeners
-    for (const set of listeners.values()) {
-      for (const record of set) {
-        if (record.signal && record.abortHandler) {
-          record.signal.removeEventListener('abort', record.abortHandler);
-        }
+    for (const [eventType, list] of Array.from(listeners.entries())) {
+      for (const record of [...list]) {
+        removeListenerRecord(eventType, record);
       }
-      set.clear();
     }
     listeners.clear();
 
@@ -782,7 +1092,16 @@ function createEventTargetInternal<E extends Record<string, any>>(
 
         const wildcardListener = (event: WildcardEvent<E>) => {
           // Emit an augmented event with the actual type
-          observer.next(augmentEvent(event.originalType, event.detail));
+          observer.next(
+            createEvent(event.originalType, event.detail, {
+              target,
+              currentTarget: target,
+              eventPhase: 2,
+              bubbles: event.bubbles,
+              cancelable: event.cancelable,
+              composed: event.composed,
+            }),
+          );
         };
 
         const unsubscribe = addWildcardListener('*', wildcardListener);
@@ -804,22 +1123,22 @@ function createEventTargetInternal<E extends Record<string, any>>(
   function events<K extends keyof E & string>(
     type: K,
     options?: AsyncIteratorOptions,
-  ): AsyncIterableIterator<EmissionEvent<E[K]>> {
+  ): AsyncIterableIterator<EmissionEvent<E[K], K>> {
     // If already completed, return an iterator that immediately yields done
     if (isCompleted) {
       return {
         [Symbol.asyncIterator]() {
           return this;
         },
-        next(): Promise<IteratorResult<EmissionEvent<E[K]>>> {
+        next(): Promise<IteratorResult<EmissionEvent<E[K], K>>> {
           return Promise.resolve({
-            value: undefined as unknown as EmissionEvent<E[K]>,
+            value: undefined as unknown as EmissionEvent<E[K], K>,
             done: true,
           });
         },
-        return(): Promise<IteratorResult<EmissionEvent<E[K]>>> {
+        return(): Promise<IteratorResult<EmissionEvent<E[K], K>>> {
           return Promise.resolve({
-            value: undefined as unknown as EmissionEvent<E[K]>,
+            value: undefined as unknown as EmissionEvent<E[K], K>,
             done: true,
           });
         },
@@ -830,26 +1149,33 @@ function createEventTargetInternal<E extends Record<string, any>>(
     const bufferSize = options?.bufferSize ?? Infinity;
     const overflowStrategy = options?.overflowStrategy ?? 'drop-oldest';
 
-    const buffer: Array<EmissionEvent<E[K]>> = [];
-    let resolve: ((result: IteratorResult<EmissionEvent<E[K]>>) => void) | null = null;
+    const buffer: Array<EmissionEvent<E[K], K>> = [];
+    let resolve: ((result: IteratorResult<EmissionEvent<E[K], K>>) => void) | null = null;
     let done = false;
     let hasOverflow = false;
+    let onAbort: (() => void) | null = null;
+    const cleanupAbortListener = () => {
+      if (signal && onAbort) {
+        signal.removeEventListener('abort', onAbort);
+      }
+    };
 
     const unsub = addEventListener(type, (event) => {
       if (done) return;
+      const typedEvent = event;
 
       if (resolve) {
         // Someone is waiting, resolve immediately
         const r = resolve;
         resolve = null;
-        r({ value: event, done: false });
+        r({ value: typedEvent, done: false });
       } else {
         // Buffer the event
         if (buffer.length >= bufferSize && bufferSize !== Infinity) {
           switch (overflowStrategy) {
             case 'drop-oldest':
               buffer.shift();
-              buffer.push(event);
+              buffer.push(typedEvent);
               break;
             case 'drop-latest':
               // Don't add the new event
@@ -859,10 +1185,11 @@ function createEventTargetInternal<E extends Record<string, any>>(
               completionCallbacks.delete(onComplete);
               done = true;
               hasOverflow = true;
+              cleanupAbortListener();
               return;
           }
         } else {
-          buffer.push(event);
+          buffer.push(typedEvent);
         }
       }
     });
@@ -870,16 +1197,16 @@ function createEventTargetInternal<E extends Record<string, any>>(
     // Handle completion
     const onComplete = () => {
       done = true;
+      cleanupAbortListener();
       if (resolve) {
         const r = resolve;
         resolve = null;
-        r({ value: undefined as unknown as EmissionEvent<E[K]>, done: true });
+        r({ value: undefined as unknown as EmissionEvent<E[K], K>, done: true });
       }
     };
     completionCallbacks.add(onComplete);
 
     // Handle abort signal
-    let onAbort: (() => void) | null = null;
     if (signal) {
       onAbort = () => {
         done = true;
@@ -888,31 +1215,21 @@ function createEventTargetInternal<E extends Record<string, any>>(
         if (resolve) {
           const r = resolve;
           resolve = null;
-          r({ value: undefined as unknown as EmissionEvent<E[K]>, done: true });
+          r({ value: undefined as unknown as EmissionEvent<E[K], K>, done: true });
         }
       };
       signal.addEventListener('abort', onAbort, { once: true });
       if (signal.aborted) onAbort();
     }
 
-    const iterator: AsyncIterableIterator<EmissionEvent<E[K]>> = {
+    const iterator: AsyncIterableIterator<EmissionEvent<E[K], K>> = {
       [Symbol.asyncIterator]() {
         return this;
       },
-      async next(): Promise<IteratorResult<EmissionEvent<E[K]>>> {
+      async next(): Promise<IteratorResult<EmissionEvent<E[K], K>>> {
         // Drain buffered events first, even if done
         if (buffer.length > 0) {
           return { value: buffer.shift()!, done: false };
-        }
-
-        // After buffer is drained, check for overflow error
-        if (hasOverflow) {
-          hasOverflow = false;
-          throw new BufferOverflowError(type, bufferSize);
-        }
-
-        if (done) {
-          return { value: undefined as unknown as EmissionEvent<E[K]>, done: true };
         }
 
         // Prevent concurrent next() calls - if there's already a pending promise, reject
@@ -925,25 +1242,30 @@ function createEventTargetInternal<E extends Record<string, any>>(
         }
 
         // Wait for next event
-        return new Promise<IteratorResult<EmissionEvent<E[K]>>>((_resolve, _reject) => {
-          if (done) {
-            _resolve({ value: undefined as unknown as EmissionEvent<E[K]>, done: true });
-            return;
-          }
-          if (hasOverflow) {
-            hasOverflow = false;
-            _reject(new BufferOverflowError(type, bufferSize));
-            return;
-          }
-          resolve = _resolve;
-        });
+        return new Promise<IteratorResult<EmissionEvent<E[K], K>>>(
+          (_resolve, _reject) => {
+            if (hasOverflow) {
+              hasOverflow = false;
+              _reject(new BufferOverflowError(type, bufferSize));
+              return;
+            }
+            if (done) {
+              _resolve({
+                value: undefined as unknown as EmissionEvent<E[K], K>,
+                done: true,
+              });
+              return;
+            }
+            resolve = _resolve;
+          },
+        );
       },
-      return(): Promise<IteratorResult<EmissionEvent<E[K]>>> {
+      return(): Promise<IteratorResult<EmissionEvent<E[K], K>>> {
         // Resolve any pending promise before cleanup
         if (resolve) {
           const r = resolve;
           resolve = null;
-          r({ value: undefined as unknown as EmissionEvent<E[K]>, done: true });
+          r({ value: undefined as unknown as EmissionEvent<E[K], K>, done: true });
         }
 
         done = true;
@@ -951,12 +1273,10 @@ function createEventTargetInternal<E extends Record<string, any>>(
         unsub();
 
         // Clean up abort signal listener
-        if (signal && onAbort) {
-          signal.removeEventListener('abort', onAbort);
-        }
+        cleanupAbortListener();
 
         return Promise.resolve({
-          value: undefined as unknown as EmissionEvent<E[K]>,
+          value: undefined as unknown as EmissionEvent<E[K], K>,
           done: true,
         });
       },

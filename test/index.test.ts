@@ -316,8 +316,6 @@ describe('pipe()', () => {
       received.push(e.detail.count);
     });
 
-    // Must add a listener first to register the event type
-    source.addEventListener('ping', () => {});
     source.pipe(dest);
 
     source.dispatchEvent({ type: 'ping', detail: { count: 1 } });
@@ -337,7 +335,6 @@ describe('pipe()', () => {
       received.push(e.detail.text);
     });
 
-    source.addEventListener('ping', () => {});
     source.pipe(dest, (event) => ({
       type: 'pong',
       detail: { text: `count: ${event.detail.count}` },
@@ -358,7 +355,6 @@ describe('pipe()', () => {
       received.push(e.detail.count);
     });
 
-    source.addEventListener('ping', () => {});
     const unsub = source.pipe(dest);
 
     source.dispatchEvent({ type: 'ping', detail: { count: 1 } });
@@ -378,7 +374,6 @@ describe('pipe()', () => {
       received.push(e.detail.count);
     });
 
-    source.addEventListener('ping', () => {});
     source.pipe(dest, (event) => (event.detail.count > 5 ? event : null));
 
     source.dispatchEvent({ type: 'ping', detail: { count: 3 } });
@@ -397,7 +392,6 @@ describe('pipe()', () => {
       received.push(e.detail.count);
     });
 
-    source.addEventListener('ping', () => {});
     source.pipe(dest);
 
     source.dispatchEvent({ type: 'ping', detail: { count: 1 } });
@@ -406,6 +400,24 @@ describe('pipe()', () => {
     source.dispatchEvent({ type: 'ping', detail: { count: 2 } }); // Should not forward
 
     expect(received).toEqual([1]);
+  });
+
+  it('returns a no-op when piping after completion', () => {
+    type Events = { ping: { count: number } };
+    const source = createEventTarget<Events>();
+    const dest = createEventTarget<Events>();
+    const received: number[] = [];
+
+    dest.addEventListener('ping', (e) => {
+      received.push(e.detail.count);
+    });
+
+    source.complete();
+    const unsub = source.pipe(dest);
+    source.dispatchEvent({ type: 'ping', detail: { count: 1 } });
+    unsub();
+
+    expect(received).toEqual([]);
   });
 });
 
@@ -480,6 +492,25 @@ describe('complete()', () => {
     // After completion, no more calls should happen
     hub.dispatchEvent({ type: 'ping', detail: { count: 2 } });
     expect(calls).toBe(1);
+  });
+
+  it('handles errors thrown by completion callbacks', () => {
+    type Events = { ping: { count: number } };
+    const hub = createEventTarget<Events>();
+    let completed = false;
+
+    hub.toObservable().subscribe({
+      complete() {
+        completed = true;
+        throw new Error('completion boom');
+      },
+    });
+
+    expect(() => {
+      hub.complete();
+    }).not.toThrow();
+
+    expect(completed).toBe(true);
   });
 });
 
@@ -997,6 +1028,50 @@ describe('events() async iterator', () => {
 
     expect(results).toEqual([]);
   });
+
+  it('resolves pending next() when complete() is called', async () => {
+    type Events = { ping: { count: number } };
+    const hub = createEventTarget<Events>();
+    const iter = hub.events('ping');
+
+    const pending = iter.next();
+    hub.complete();
+
+    const result = await pending;
+    expect(result.done).toBe(true);
+  });
+
+  it('resolves pending next() when abort signal fires', async () => {
+    type Events = { ping: { count: number } };
+    const hub = createEventTarget<Events>();
+    const { signal, abort } = createAbortSignal();
+    const iter = hub.events('ping', { signal });
+
+    const pending = iter.next();
+    abort();
+
+    const result = await pending;
+    expect(result.done).toBe(true);
+  });
+
+  it('rejects concurrent next() calls and resolves pending on return()', async () => {
+    type Events = { ping: { count: number } };
+    const hub = createEventTarget<Events>();
+    const iter = hub.events('ping');
+
+    const pending = iter.next();
+    const concurrent = iter.next();
+
+    await expect(concurrent).rejects.toThrow(
+      'Concurrent calls to next() are not supported on this async iterator',
+    );
+
+    const returnResult = await iter.return?.();
+    const resolved = await pending;
+
+    expect(returnResult?.done).toBe(true);
+    expect(resolved.done).toBe(true);
+  });
 });
 
 describe('EventEmission abstract class', () => {
@@ -1101,6 +1176,33 @@ function createAbortSignal(): { signal: MinimalAbortSignal; abort: () => void } 
       Object.assign(signal, { aborted: true });
       for (const listener of Array.from(listeners)) listener();
     },
+  };
+}
+
+function createTrackedAbortSignal(): {
+  signal: MinimalAbortSignal;
+  abort: () => void;
+  listenerCount: () => number;
+} {
+  const listeners = new Set<() => void>();
+  const signal: MinimalAbortSignal = {
+    aborted: false,
+    reason: undefined,
+    addEventListener(_type, listener) {
+      listeners.add(listener);
+    },
+    removeEventListener(_type, listener) {
+      listeners.delete(listener);
+    },
+  };
+  return {
+    signal,
+    abort: () => {
+      if (signal.aborted) return;
+      Object.assign(signal, { aborted: true });
+      for (const listener of Array.from(listeners)) listener();
+    },
+    listenerCount: () => listeners.size,
   };
 }
 
@@ -1303,6 +1405,40 @@ describe('EventTarget interop', () => {
     expect(domTarget.dispatched).toHaveLength(1);
   });
 
+  it('forwardToEventTarget falls back when CustomEvent is unavailable', () => {
+    type Events = { click: { x: number; y: number } };
+    const hub = createEventTarget<Events>();
+    const domTarget = createMockDOMEventTarget();
+    const hadCustomEvent = Object.prototype.hasOwnProperty.call(globalThis, 'CustomEvent');
+    const originalDescriptor = Object.getOwnPropertyDescriptor(globalThis, 'CustomEvent');
+
+    try {
+      Object.defineProperty(globalThis, 'CustomEvent', {
+        value: undefined,
+        configurable: true,
+        writable: true,
+      });
+
+      forwardToEventTarget(hub, domTarget);
+      hub.dispatchEvent({ type: 'click', detail: { x: 5, y: 6 } });
+
+      expect(domTarget.dispatched).toHaveLength(1);
+      expect(domTarget.dispatched[0]).toEqual({
+        type: 'click',
+        detail: { x: 5, y: 6 },
+        bubbles: false,
+        cancelable: false,
+        composed: false,
+      });
+    } finally {
+      if (hadCustomEvent && originalDescriptor) {
+        Object.defineProperty(globalThis, 'CustomEvent', originalDescriptor);
+      } else {
+        delete (globalThis as { CustomEvent?: typeof CustomEvent }).CustomEvent;
+      }
+    }
+  });
+
   it('fromEventTarget creates emitter from DOM target', () => {
     type Events = { input: string; change: string };
     const domTarget = createMockDOMEventTarget();
@@ -1330,6 +1466,17 @@ describe('EventTarget interop', () => {
     emitter.destroy();
     expect(domTarget.listeners.size).toBe(0);
     expect(emitter.completed).toBe(true);
+  });
+
+  it('fromEventTarget destroy removes abort listener', () => {
+    type Events = { click: number };
+    const domTarget = createMockDOMEventTarget();
+    const { signal, listenerCount } = createTrackedAbortSignal();
+    const emitter = fromEventTarget<Events>(domTarget, ['click'], { signal });
+
+    expect(listenerCount()).toBe(1);
+    emitter.destroy();
+    expect(listenerCount()).toBe(0);
   });
 
   it('fromEventTarget respects abort signal', () => {
@@ -1937,5 +2084,344 @@ describe('createEventTarget advanced coverage', () => {
 
     // After removal, aborting should have no effect (no errors)
     controller.abort();
+  });
+});
+
+describe('createEventTarget DOM compliance', () => {
+  it('exposes DOM event property getters during dispatch', () => {
+    type Events = { ping: number };
+    const hub = createEventTarget<Events>();
+    const captured: Record<string, unknown> = {};
+
+    hub.addEventListener('ping', (event) => {
+      captured.type = event.type;
+      captured.bubbles = event.bubbles;
+      captured.cancelable = event.cancelable;
+      captured.cancelBubble = event.cancelBubble;
+      captured.composed = event.composed;
+      captured.currentTarget = event.currentTarget;
+      captured.defaultPrevented = event.defaultPrevented;
+      captured.eventPhase = event.eventPhase;
+      captured.isTrusted = event.isTrusted;
+      captured.returnValue = event.returnValue;
+      captured.srcElement = event.srcElement;
+      captured.target = event.target;
+      captured.timeStamp = event.timeStamp;
+      const path = event.composedPath();
+      captured.composedPathLength = path.length;
+      captured.composedPathFirst = path[0];
+    });
+
+    const result = hub.dispatchEvent({
+      type: 'ping',
+      detail: 1,
+      bubbles: true,
+      cancelable: true,
+      composed: true,
+    });
+
+    expect(result).toBe(true);
+    expect(captured.type).toBe('ping');
+    expect(captured.bubbles).toBe(true);
+    expect(captured.cancelable).toBe(true);
+    expect(captured.cancelBubble).toBe(false);
+    expect(captured.composed).toBe(true);
+    expect(captured.currentTarget).toBe(hub);
+    expect(captured.defaultPrevented).toBe(false);
+    expect(captured.eventPhase).toBe(2);
+    expect(captured.isTrusted).toBe(false);
+    expect(captured.returnValue).toBe(true);
+    expect(captured.srcElement).toBe(hub);
+    expect(captured.target).toBe(hub);
+    expect(typeof captured.timeStamp).toBe('number');
+    expect(captured.composedPathLength).toBe(1);
+    expect(captured.composedPathFirst).toBe(hub);
+  });
+
+  it('cancelBubble stops bubbling listeners', () => {
+    type Events = { ping: number };
+    const hub = createEventTarget<Events>();
+    const calls: string[] = [];
+
+    hub.addEventListener(
+      'ping',
+      (event) => {
+        calls.push('capture');
+        event.cancelBubble = true;
+      },
+      { capture: true },
+    );
+    hub.addEventListener('ping', () => {
+      calls.push('bubble');
+    });
+
+    hub.dispatchEvent({ type: 'ping', detail: 1 });
+
+    expect(calls).toEqual(['capture']);
+  });
+
+  it('returnValue=false cancels a cancelable event', () => {
+    type Events = { ping: number };
+    const hub = createEventTarget<Events>();
+    let captured: EmissionEvent<number> | null = null;
+
+    hub.addEventListener('ping', (event) => {
+      captured = event;
+      event.returnValue = false;
+    });
+
+    const result = hub.dispatchEvent({ type: 'ping', detail: 1, cancelable: true });
+
+    expect(result).toBe(false);
+    expect(captured?.defaultPrevented).toBe(true);
+  });
+
+  it('initEvent is ignored during dispatch and can reinitialize after dispatch', () => {
+    type Events = { ping: number };
+    const hub = createEventTarget<Events>();
+    let captured: EmissionEvent<number> | null = null;
+
+    hub.addEventListener('ping', (event) => {
+      event.initEvent('changed', true, true);
+      captured = event;
+    });
+
+    hub.dispatchEvent({ type: 'ping', detail: 1 });
+
+    expect(captured?.type).toBe('ping');
+
+    captured?.initEvent('reset', true, true);
+    expect(captured?.type).toBe('reset');
+    expect(captured?.bubbles).toBe(true);
+    expect(captured?.cancelable).toBe(true);
+  });
+
+  it('dispatchEvent throws when type is not a string', () => {
+    type Events = { ping: number };
+    const hub = createEventTarget<Events>();
+
+    expect(() => {
+      hub.dispatchEvent({ type: 123 as unknown as string, detail: 1 });
+    }).toThrow('Event type must be a string');
+  });
+
+  it('dispatchEvent throws when input is not an object', () => {
+    type Events = { ping: number };
+    const hub = createEventTarget<Events>();
+
+    expect(() => {
+      hub.dispatchEvent(null as unknown as EmissionEvent<number>);
+    }).toThrow('dispatchEvent expects an event object');
+  });
+
+  it('dispatchEvent throws InvalidStateError when redispatching the same event', () => {
+    type Events = { ping: number };
+    const hub = createEventTarget<Events>();
+    let errorName: string | null = null;
+
+    hub.addEventListener('ping', (event) => {
+      try {
+        hub.dispatchEvent(event);
+      } catch (err) {
+        errorName = (err as Error).name;
+      }
+    });
+
+    hub.dispatchEvent({ type: 'ping', detail: 1 });
+
+    expect(errorName).toBe('InvalidStateError');
+  });
+
+  it('dispatchEvent falls back when DOMException is unavailable', () => {
+    type Events = { ping: number };
+    const hub = createEventTarget<Events>();
+    let errorName: string | null = null;
+    const hadDOMException = Object.prototype.hasOwnProperty.call(globalThis, 'DOMException');
+    const originalDescriptor = Object.getOwnPropertyDescriptor(globalThis, 'DOMException');
+
+    try {
+      Object.defineProperty(globalThis, 'DOMException', {
+        value: undefined,
+        configurable: true,
+        writable: true,
+      });
+
+      hub.addEventListener('ping', (event) => {
+        try {
+          hub.dispatchEvent(event);
+        } catch (err) {
+          errorName = (err as Error).name;
+        }
+      });
+
+      hub.dispatchEvent({ type: 'ping', detail: 1 });
+    } finally {
+      if (hadDOMException && originalDescriptor) {
+        Object.defineProperty(globalThis, 'DOMException', originalDescriptor);
+      } else {
+        delete (globalThis as { DOMException?: typeof DOMException }).DOMException;
+      }
+    }
+
+    expect(errorName).toBe('InvalidStateError');
+  });
+
+  it('duplicate listeners return an unsubscribe that removes the listener', () => {
+    type Events = { ping: number };
+    const hub = createEventTarget<Events>();
+    let calls = 0;
+    const listener = () => {
+      calls += 1;
+    };
+
+    hub.addEventListener('ping', listener);
+    const unsub = hub.addEventListener('ping', listener);
+
+    unsub();
+    hub.dispatchEvent({ type: 'ping', detail: 1 });
+
+    expect(calls).toBe(0);
+  });
+
+  it('duplicate wildcard listeners return an unsubscribe that removes the listener', () => {
+    type Events = { 'ns:event': number };
+    const hub = createEventTarget<Events>();
+    let calls = 0;
+    const listener = () => {
+      calls += 1;
+    };
+
+    hub.addWildcardListener('ns:*', listener);
+    const unsub = hub.addWildcardListener('ns:*', listener);
+
+    unsub();
+    hub.dispatchEvent({ type: 'ns:event', detail: 1 });
+
+    expect(calls).toBe(0);
+  });
+
+  it('clear removes wildcard abort handlers', () => {
+    type Events = { ping: number };
+    const hub = createEventTarget<Events>();
+    const { signal, listenerCount } = createTrackedAbortSignal();
+
+    hub.addWildcardListener('*', () => {}, { signal });
+    expect(listenerCount()).toBe(1);
+
+    hub.clear();
+
+    expect(listenerCount()).toBe(0);
+  });
+
+  it('removeAllListeners removes wildcard abort handlers', () => {
+    type Events = { ping: number };
+    const hub = createEventTarget<Events>();
+    const { signal, listenerCount } = createTrackedAbortSignal();
+
+    hub.addWildcardListener('*', () => {}, { signal });
+    expect(listenerCount()).toBe(1);
+
+    hub.removeAllListeners();
+
+    expect(listenerCount()).toBe(0);
+  });
+
+  it('complete removes wildcard abort handlers', () => {
+    type Events = { ping: number };
+    const hub = createEventTarget<Events>();
+    const { signal, listenerCount } = createTrackedAbortSignal();
+
+    hub.addWildcardListener('*', () => {}, { signal });
+    expect(listenerCount()).toBe(1);
+
+    hub.complete();
+
+    expect(listenerCount()).toBe(0);
+  });
+
+  it('returns no-op unsubscribe for addEventListener after completion', () => {
+    type Events = { ping: number };
+    const hub = createEventTarget<Events>();
+
+    hub.complete();
+
+    const unsubscribe = hub.addEventListener('ping', () => {});
+
+    expect(() => {
+      unsubscribe();
+    }).not.toThrow();
+  });
+
+  it('returns no-op unsubscribe for addWildcardListener after completion', () => {
+    type Events = { ping: number };
+    const hub = createEventTarget<Events>();
+
+    hub.complete();
+
+    const unsubscribe = hub.addWildcardListener('*', () => {});
+
+    expect(() => {
+      unsubscribe();
+    }).not.toThrow();
+  });
+
+  it('rethrows async listener errors via queueMicrotask without error listeners', async () => {
+    type Events = { ping: number };
+    const hub = createEventTarget<Events>();
+    const originalQueueMicrotask = globalThis.queueMicrotask;
+    const error = new Error('async listener error');
+    let captured: unknown;
+
+    globalThis.queueMicrotask = (cb) => {
+      try {
+        cb();
+      } catch (err) {
+        captured = err;
+      }
+    };
+
+    try {
+      hub.addEventListener('ping', async () => {
+        throw error;
+      });
+
+      hub.dispatchEvent({ type: 'ping', detail: 1 });
+
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    } finally {
+      globalThis.queueMicrotask = originalQueueMicrotask;
+    }
+
+    expect(captured).toBe(error);
+  });
+
+  it('rethrows async wildcard listener errors via queueMicrotask without error listeners', async () => {
+    type Events = { ping: number };
+    const hub = createEventTarget<Events>();
+    const originalQueueMicrotask = globalThis.queueMicrotask;
+    const error = new Error('async wildcard error');
+    let captured: unknown;
+
+    globalThis.queueMicrotask = (cb) => {
+      try {
+        cb();
+      } catch (err) {
+        captured = err;
+      }
+    };
+
+    try {
+      hub.addWildcardListener('*', async () => {
+        throw error;
+      });
+
+      hub.dispatchEvent({ type: 'ping', detail: 1 });
+
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    } finally {
+      globalThis.queueMicrotask = originalQueueMicrotask;
+    }
+
+    expect(captured).toBe(error);
   });
 });

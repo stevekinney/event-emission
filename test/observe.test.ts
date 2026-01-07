@@ -52,6 +52,81 @@ describe('observe module coverage', () => {
       expect((previousState as typeof original).nested.value).toBe(1);
     });
 
+    it('deep strategy uses provided deepClone fallback', () => {
+      const original = { nested: { value: 1 } };
+      let calls = 0;
+      const deepClone = <T,>(value: T): T => {
+        calls += 1;
+        const cloned = JSON.parse(JSON.stringify(value)) as T & {
+          __fromDeepClone?: boolean;
+        };
+        cloned.__fromDeepClone = true;
+        return cloned as T;
+      };
+      const state = createEventTarget(original, {
+        observe: true,
+        deep: true,
+        cloneStrategy: 'deep',
+        deepClone,
+      });
+
+      let previousState: unknown;
+      state.addEventListener('update', (event) => {
+        previousState = (event.detail as PropertyChangeDetail).previous;
+      });
+
+      state.nested.value = 2;
+
+      expect(calls).toBe(1);
+      expect(
+        (previousState as { __fromDeepClone?: boolean }).__fromDeepClone,
+      ).toBe(true);
+    });
+
+    it('deep strategy throws when structuredClone is unavailable', () => {
+      const original = { nested: { value: 1 } };
+      const hadStructuredClone = 'structuredClone' in globalThis;
+      const originalStructuredClone = (globalThis as { structuredClone?: typeof structuredClone })
+        .structuredClone;
+
+      try {
+        (globalThis as { structuredClone?: typeof structuredClone }).structuredClone = undefined;
+        const state = createEventTarget(original, {
+          observe: true,
+          deep: true,
+          cloneStrategy: 'deep',
+        });
+
+        expect(() => {
+          state.nested.value = 2;
+        }).toThrow('structuredClone is not available');
+      } finally {
+        if (hadStructuredClone) {
+          (globalThis as { structuredClone?: typeof structuredClone }).structuredClone =
+            originalStructuredClone;
+        } else {
+          delete (globalThis as { structuredClone?: typeof structuredClone }).structuredClone;
+        }
+      }
+    });
+
+    it('unknown cloneStrategy falls back to returning original reference', () => {
+      const original = { nested: { value: 1 } };
+      const state = createEventTarget(original, {
+        observe: true,
+        cloneStrategy: 'unknown' as unknown as 'path',
+      });
+
+      let previousState: unknown;
+      state.addEventListener('update', (event) => {
+        previousState = (event.detail as PropertyChangeDetail).previous;
+      });
+
+      state.nested.value = 2;
+
+      expect(previousState).toBe(original);
+    });
+
     it('path strategy clones along changed path', () => {
       const original = { a: { b: { c: 1 } }, other: 'unchanged' };
       const state = createEventTarget(original, {
@@ -316,6 +391,59 @@ describe('observe module coverage', () => {
     });
   });
 
+  describe('createObservableProxy forwarding cleanup', () => {
+    it('cleans up forwarding handlers on complete()', () => {
+      const sourceListeners = new Map<string, Set<(event: unknown) => void>>();
+      const source = {
+        addEventListener(type: string, listener: (event: unknown) => void) {
+          if (!sourceListeners.has(type)) {
+            sourceListeners.set(type, new Set());
+          }
+          sourceListeners.get(type)!.add(listener);
+        },
+        removeEventListener(type: string, listener: (event: unknown) => void) {
+          sourceListeners.get(type)?.delete(listener);
+        },
+        dispatchEvent(event: { type: string; detail?: unknown }) {
+          const listeners = sourceListeners.get(event.type);
+          if (listeners) {
+            for (const listener of listeners) {
+              listener(event);
+            }
+          }
+          return true;
+        },
+      };
+
+      const state = createEventTarget(source, { observe: true });
+      const stateAsAny = state as unknown as EventTargetLike<Record<string, unknown>>;
+
+      stateAsAny.addEventListener('custom', () => {});
+
+      expect(sourceListeners.get('custom')?.size ?? 0).toBe(1);
+
+      state.complete();
+
+      expect(sourceListeners.get('custom')?.size ?? 0).toBe(0);
+    });
+  });
+
+  it('ignores symbol property updates', () => {
+    const original = { count: 0 };
+    const state = createEventTarget(original, { observe: true });
+    let updates = 0;
+
+    state.addEventListener('update', () => {
+      updates += 1;
+    });
+
+    const meta = Symbol('meta');
+    (state as Record<symbol, unknown>)[meta] = 'value';
+    delete (state as Record<symbol, unknown>)[meta];
+
+    expect(updates).toBe(0);
+  });
+
   describe('getOriginal and isObserved', () => {
     it('getOriginal returns original for non-proxied objects', () => {
       const obj = { value: 1 };
@@ -340,5 +468,13 @@ describe('observe module coverage', () => {
 
       expect(isObserved(state)).toBe(true);
     });
+  });
+
+  it('exposes completed getter on observed proxy', () => {
+    const state = createEventTarget({ count: 0 }, { observe: true });
+
+    expect(state.completed).toBe(false);
+    state.complete();
+    expect(state.completed).toBe(true);
   });
 });

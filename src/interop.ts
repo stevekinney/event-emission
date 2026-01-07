@@ -43,11 +43,24 @@ export function forwardToEventTarget<E extends Record<string, unknown>>(
   const unsubscribe = source.addWildcardListener(
     '*',
     (event) => {
-      // Create a DOM-like event object
-      const domEvent: DOMEventLike = {
-        type: event.originalType,
-        detail: event.detail,
-      };
+      // Use CustomEvent when available to preserve DOM event semantics.
+      const CustomEventCtor = (globalThis as { CustomEvent?: typeof CustomEvent })
+        .CustomEvent;
+      const domEvent: DOMEventLike =
+        typeof CustomEventCtor === 'function'
+          ? new CustomEventCtor(event.originalType, {
+              detail: event.detail,
+              bubbles: event.bubbles,
+              cancelable: event.cancelable,
+              composed: event.composed,
+            })
+          : {
+              type: event.originalType,
+              detail: event.detail,
+              bubbles: event.bubbles,
+              cancelable: event.cancelable,
+              composed: event.composed,
+            };
       target.dispatchEvent(domEvent);
     },
     options,
@@ -144,6 +157,9 @@ export function fromEventTarget<E extends Record<string, unknown>>(
       emitter.dispatchEvent({
         type,
         detail: (event.detail ?? event) as E[typeof type],
+        bubbles: event.bubbles,
+        cancelable: event.cancelable,
+        composed: event.composed,
       } as unknown as EmissionEvent<E[keyof E & string]>);
     };
     handlers.set(type, handler);
@@ -266,7 +282,7 @@ export function pipe<E extends Record<string, unknown>>(
       target.dispatchEvent({
         type: event.originalType,
         detail: event.detail as E[keyof E & string],
-      } as unknown as EmissionEvent<E[keyof E & string]>);
+      } as unknown as Parameters<typeof target.dispatchEvent>[0]);
     },
     options,
   );

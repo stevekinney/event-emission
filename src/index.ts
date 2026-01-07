@@ -21,9 +21,13 @@ declare global {
 export type {
   AddEventListenerOptionsLike,
   AsyncIteratorOptions,
+  DispatchEventInput,
   DOMEventLike,
   DOMEventTargetLike,
   EmissionEvent,
+  EventListenerLike,
+  EventListenerObject,
+  EventListenerOptionsLike,
   EventsIteratorOptions,
   EventTargetLike,
   InteropOptions,

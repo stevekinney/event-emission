@@ -58,7 +58,7 @@ describe('ObservableEventTarget on()', () => {
       defaultPrevented = e.defaultPrevented;
     });
 
-    target.dispatchEvent({ type: 'click', detail: { x: 0, y: 0 } });
+    target.dispatchEvent({ type: 'click', detail: { x: 0, y: 0 }, cancelable: true });
 
     expect(handlerCalled).toBe(true);
     expect(defaultPrevented).toBe(true);

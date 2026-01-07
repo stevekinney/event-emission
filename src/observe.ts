@@ -45,8 +45,10 @@ export const ORIGINAL_TARGET = Symbol.for('@lasercat/event-emission/original');
 export interface ObserveOptions {
   /** Enable deep observation of nested objects (default: true) */
   deep?: boolean;
-  /** Clone strategy for previous state (default: 'path') */
+  /** Clone strategy for previous state (default: 'path'); 'deep' uses structuredClone or deepClone */
   cloneStrategy?: 'shallow' | 'deep' | 'path';
+  /** Optional deep clone fallback for runtimes without structuredClone */
+  deepClone?: <T>(value: T) => T;
 }
 
 /** Event detail for property changes */
@@ -115,11 +117,17 @@ const ARRAY_MUTATORS = new Set<ArrayMutationMethod>([
 // Internal Types
 // =============================================================================
 
+type ResolvedObserveOptions = {
+  deep: boolean;
+  cloneStrategy: 'shallow' | 'deep' | 'path';
+  deepClone?: ObserveOptions['deepClone'];
+};
+
 interface ProxyContext<T extends object> {
   eventTarget: EventTargetLike<ObservableEventMap<T>>;
   /** Reference to the original (unproxied) root object for cloning */
   originalRoot: T;
-  options: Required<ObserveOptions>;
+  options: ResolvedObserveOptions;
 }
 
 // =============================================================================
@@ -161,22 +169,18 @@ function isArrayMutator(prop: string | symbol): prop is ArrayMutationMethod {
 
 /** Clone along changed path for efficiency */
 function cloneAlongPath(obj: unknown, path?: string): unknown {
-  if (obj === null || typeof obj !== 'object') {
-    return obj;
-  }
+  const isArray = Array.isArray(obj);
+  const rootClone = isArray
+    ? [...(obj as unknown[])]
+    : { ...(obj as Record<string, unknown>) };
 
-  if (!path) {
-    return Array.isArray(obj) ? [...obj] : { ...obj };
+  if (!path || isArray) {
+    return rootClone;
   }
 
   const parts = path.split('.');
 
-  if (Array.isArray(obj)) {
-    // For arrays, shallow copy
-    return [...obj];
-  }
-
-  const result: Record<string, unknown> = { ...obj };
+  const result = rootClone as Record<string, unknown>;
 
   let current: Record<string, unknown> = result;
   // Clone all objects along the path, INCLUDING the leaf
@@ -202,6 +206,7 @@ function cloneForComparison(
   obj: unknown,
   strategy: 'shallow' | 'deep' | 'path',
   changedPath?: string,
+  deepClone?: ObserveOptions['deepClone'],
 ): unknown {
   if (obj === null || typeof obj !== 'object') return obj;
 
@@ -210,6 +215,14 @@ function cloneForComparison(
       return Array.isArray(obj) ? [...obj] : { ...obj };
 
     case 'deep':
+      if (deepClone) {
+        return deepClone(obj);
+      }
+      if (typeof structuredClone !== 'function') {
+        throw new Error(
+          "structuredClone is not available in this runtime; provide observe.deepClone, or use cloneStrategy 'path' or 'shallow'.",
+        );
+      }
       return structuredClone(obj);
 
     case 'path':
@@ -300,6 +313,7 @@ function createArrayMethodInterceptor<T extends object>(
       context.originalRoot,
       context.options.cloneStrategy,
       path,
+      context.options.deepClone,
     );
     const previousItems = [...array];
 
@@ -418,6 +432,7 @@ function createObservableProxyInternal<T extends object>(
         context.originalRoot,
         context.options.cloneStrategy,
         propPath,
+        context.options.deepClone,
       );
 
       const success = Reflect.set(obj, prop, value, receiver);
@@ -457,6 +472,7 @@ function createObservableProxyInternal<T extends object>(
         context.originalRoot,
         context.options.cloneStrategy,
         propPath,
+        context.options.deepClone,
       );
 
       const success = Reflect.deleteProperty(obj, prop);
@@ -544,6 +560,8 @@ export function setupEventForwarding<T extends object>(
   target: EventTargetLike<ObservableEventMap<T>>,
 ): () => void {
   const handlers = new Map<string, (event: unknown) => void>();
+  const sourceAddEventListener = source.addEventListener.bind(source);
+  const sourceRemoveEventListener = source.removeEventListener.bind(source);
 
   const forwardHandler = (type: string) => (event: unknown) => {
     const detail = (event as MinimalCustomEvent).detail ?? event;
@@ -566,7 +584,7 @@ export function setupEventForwarding<T extends object>(
     if (!handlers.has(type) && type !== 'update' && !type.startsWith('update:')) {
       const handler = forwardHandler(type);
       handlers.set(type, handler);
-      source.addEventListener(type, handler);
+      sourceAddEventListener(type, handler);
     }
     return originalAddEventListener(
       type as keyof ObservableEventMap<T> & string,
@@ -587,7 +605,7 @@ export function setupEventForwarding<T extends object>(
       originalAddEventListener;
     // Clean up all forwarding handlers
     for (const [type, handler] of handlers) {
-      source.removeEventListener(type, handler);
+      sourceRemoveEventListener(type, handler);
     }
     handlers.clear();
   };
@@ -664,6 +682,9 @@ export function getOriginal<T extends object>(proxy: T): T {
  * including nested objects and array mutations. Events are dispatched to the
  * provided event target for each change.
  *
+ * If the target is an EventTarget, event forwarding is set up automatically and
+ * cleaned up when the event target completes.
+ *
  * Note: This is typically called internally by createEventTarget with observe: true.
  * You usually don't need to call this directly.
  *
@@ -709,9 +730,10 @@ export function createObservableProxy<T extends object>(
   eventTarget: EventTargetLike<ObservableEventMap<T>>,
   options?: ObserveOptions,
 ): T {
-  const resolvedOptions: Required<ObserveOptions> = {
+  const resolvedOptions: ResolvedObserveOptions = {
     deep: options?.deep ?? true,
     cloneStrategy: options?.cloneStrategy ?? 'path',
+    deepClone: options?.deepClone,
   };
 
   const context: ProxyContext<T> = {
@@ -724,7 +746,22 @@ export function createObservableProxy<T extends object>(
 
   // Set up event forwarding if target is already an EventTarget
   if (isEventTarget(target)) {
-    setupEventForwarding(target as unknown as MinimalEventTarget, eventTarget);
+    const cleanupForwarding = setupEventForwarding(
+      target as unknown as MinimalEventTarget,
+      eventTarget,
+    );
+    const maybeComplete = (eventTarget as { complete?: () => void }).complete;
+    if (typeof maybeComplete === 'function') {
+      const originalComplete = maybeComplete.bind(eventTarget);
+      let cleaned = false;
+      (eventTarget as { complete: () => void }).complete = () => {
+        if (!cleaned) {
+          cleaned = true;
+          cleanupForwarding();
+        }
+        return originalComplete();
+      };
+    }
   }
 
   return proxy;

@@ -59,7 +59,7 @@ events.dispatchEvent({
 ## Core concepts
 
 - **Event map**: a TypeScript type that maps event names to payload types.
-- **Event shape**: `{ type: string; detail: Payload }` for all listeners.
+- **Event shape**: `{ type: string; detail: Payload; bubbles?: boolean; cancelable?: boolean; composed?: boolean }` for dispatch.
 - **Unsubscribe**: `addEventListener` returns a function to remove the listener.
 
 ## API overview
@@ -117,11 +117,29 @@ state.user.name = 'Grace'; // Triggers 'update' and 'update:user.name'
 
 **Observe options:**
 
-| Option          | Type                            | Default  | Description                        |
-| --------------- | ------------------------------- | -------- | ---------------------------------- |
-| `observe`       | `boolean`                       | `false`  | Enable property change observation |
-| `deep`          | `boolean`                       | `true`   | Observe nested objects             |
-| `cloneStrategy` | `'shallow' \| 'deep' \| 'path'` | `'path'` | How to clone previous state        |
+Deep observation is enabled by default.
+
+| Option          | Type                            | Default  | Description                                                        |
+| --------------- | ------------------------------- | -------- | ------------------------------------------------------------------ |
+| `observe`       | `boolean`                       | `false`  | Enable property change observation                                 |
+| `deep`          | `boolean`                       | `true`   | Observe nested objects                                             |
+| `cloneStrategy` | `'shallow' \| 'deep' \| 'path'` | `'path'` | How to clone previous state                                        |
+| `deepClone`     | `<T>(value: T) => T`            | -        | Optional deep clone fallback when `structuredClone` is unavailable |
+
+Note: `cloneStrategy: 'deep'` uses `structuredClone` by default, or `deepClone` if provided.
+
+Example fallback:
+
+```typescript
+const state = createEventTarget(
+  { count: 0, user: { name: 'Ada' } },
+  {
+    observe: true,
+    cloneStrategy: 'deep',
+    deepClone: (value) => JSON.parse(JSON.stringify(value)),
+  },
+);
+```
 
 **Update event details:**
 
@@ -146,6 +164,7 @@ clicks.subscribe((event) => {
 
 | Option         | Type          | Default | Description                                                                            |
 | -------------- | ------------- | ------- | -------------------------------------------------------------------------------------- |
+| `capture`      | `boolean`     | `false` | If true, listen during the capture phase                                               |
 | `receiveError` | `boolean`     | `false` | If true, listen for "error" events and forward them to the observer's error method     |
 | `handler`      | `Function`    | `null`  | Optional function to run stateful actions (like `preventDefault()`) before dispatching |
 | `once`         | `boolean`     | `false` | If true, the observable completes after the first event is dispatched                  |
@@ -164,18 +183,22 @@ const unsubscribe = events.addEventListener('message', (event) => {
 unsubscribe();
 ```
 
-**Options:**
+**Options:** (or pass `true`/`false` for capture)
 
-| Option   | Type          | Description                                  |
-| -------- | ------------- | -------------------------------------------- |
-| `once`   | `boolean`     | Remove listener after first invocation       |
-| `signal` | `AbortSignal` | Abort signal to remove listener when aborted |
+| Option    | Type          | Description                                  |
+| --------- | ------------- | -------------------------------------------- |
+| `capture` | `boolean`     | Listen during the capture phase              |
+| `once`    | `boolean`     | Remove listener after first invocation       |
+| `passive` | `boolean`     | Listener will not call `preventDefault()`    |
+| `signal`  | `AbortSignal` | Abort signal to remove listener when aborted |
+
+Note: `preventDefault()` only affects events dispatched with `cancelable: true`. `dispatchEvent` returns `false` when a cancelable event is prevented.
 
 ### `once(type, listener, options?)`
 
 Adds a one-time listener.
 
-### `removeEventListener(type, listener)`
+### `removeEventListener(type, listener, options?)`
 
 Removes a specific listener.
 
@@ -361,7 +384,7 @@ const unsubscribe = pipe(componentEvents, appBus);
 unsubscribe();
 ```
 
-Note: `pipe(source, target)` forwards all events via a wildcard listener. The instance method `events.pipe(target)` only forwards event types that already have listeners when you call it.
+Note: Both `pipe(source, target)` and `events.pipe(target)` forward all events via a wildcard listener. Use a map function to transform events or return `null` to filter.
 
 ## React integration
 

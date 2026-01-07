@@ -82,5 +82,80 @@ describe('Observable', () => {
       Observable.from(like as any).subscribe((v) => received.push(v as number));
       expect(received).toEqual([10]);
     });
+
+    it('wraps observable-like values that are not Observable instances', () => {
+      const received: number[] = [];
+      const like = {
+        [Symbol.observable]() {
+          return {
+            subscribe(observer: { next: (value: number) => void; complete: () => void }) {
+              observer.next(5);
+              observer.complete();
+            },
+          };
+        },
+      };
+
+      Observable.from(like as any).subscribe((v) => received.push(v as number));
+      expect(received).toEqual([5]);
+    });
+  });
+
+  describe('hostReportError', () => {
+    it('reports start errors via queueMicrotask', () => {
+      const observable = new Observable(() => {});
+      const originalQueueMicrotask = globalThis.queueMicrotask;
+      let captured: unknown;
+
+      globalThis.queueMicrotask = (cb) => {
+        try {
+          cb();
+        } catch (err) {
+          captured = err;
+        }
+      };
+
+      try {
+        observable.subscribe({
+          start() {
+            throw new Error('start boom');
+          },
+        });
+      } finally {
+        globalThis.queueMicrotask = originalQueueMicrotask;
+      }
+
+      expect((captured as Error)?.message).toBe('start boom');
+    });
+
+    it('reports start errors via setTimeout when queueMicrotask is unavailable', () => {
+      const observable = new Observable(() => {});
+      const originalQueueMicrotask = globalThis.queueMicrotask;
+      const originalSetTimeout = globalThis.setTimeout;
+      let captured: unknown;
+
+      globalThis.queueMicrotask = undefined as unknown as typeof queueMicrotask;
+      globalThis.setTimeout = ((cb: () => void) => {
+        try {
+          cb();
+        } catch (err) {
+          captured = err;
+        }
+        return 0 as unknown as ReturnType<typeof setTimeout>;
+      }) as typeof setTimeout;
+
+      try {
+        observable.subscribe({
+          start() {
+            throw new Error('start boom');
+          },
+        });
+      } finally {
+        globalThis.queueMicrotask = originalQueueMicrotask;
+        globalThis.setTimeout = originalSetTimeout;
+      }
+
+      expect((captured as Error)?.message).toBe('start boom');
+    });
   });
 });

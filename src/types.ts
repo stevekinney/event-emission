@@ -10,9 +10,9 @@ declare global {
  * Event structure passed to listeners.
  * Matches the shape of a DOM CustomEvent to ensure compatibility.
  */
-export interface EmissionEvent<Detail> {
+export interface EmissionEvent<Detail, Type extends string = string> {
   /** The event type identifier. */
-  readonly type: string;
+  readonly type: Type;
   /** The event payload data. */
   readonly detail: Detail;
 
@@ -20,6 +20,8 @@ export interface EmissionEvent<Detail> {
   readonly bubbles: boolean;
   /** DOM Event compatibility: true if the event can be cancelled. */
   readonly cancelable: boolean;
+  /** DOM Event compatibility: legacy alias for stopPropagation(). */
+  cancelBubble: boolean;
   /** DOM Event compatibility: true if the event can cross Shadow DOM boundaries. */
   readonly composed: boolean;
   /** DOM Event compatibility: the object currently processing the event. */
@@ -30,6 +32,10 @@ export interface EmissionEvent<Detail> {
   readonly eventPhase: number;
   /** DOM Event compatibility: true if the event was dispatched by the user agent. */
   readonly isTrusted: boolean;
+  /** DOM Event compatibility: legacy alias for defaultPrevented. */
+  returnValue: boolean;
+  /** DOM Event compatibility: legacy alias for target. */
+  readonly srcElement: unknown;
   /** DOM Event compatibility: the object that originally dispatched the event. */
   readonly target: unknown;
   /** DOM Event compatibility: the time at which the event was created. */
@@ -37,6 +43,8 @@ export interface EmissionEvent<Detail> {
 
   /** DOM Event compatibility: returns the path of nodes the event will travel through. */
   composedPath(): unknown[];
+  /** DOM Event compatibility: legacy initializer. */
+  initEvent(type: string, bubbles?: boolean, cancelable?: boolean): void;
   /** DOM Event compatibility: cancels the event if it is cancelable. */
   preventDefault(): void;
   /** DOM Event compatibility: prevents other listeners from being called. */
@@ -55,11 +63,11 @@ export interface EmissionEvent<Detail> {
  * Event passed to wildcard listeners, includes the original event type.
  */
 export interface WildcardEvent<E extends Record<string, unknown>> extends EmissionEvent<
-  E[keyof E]
+  E[keyof E],
+  '*' | `${string}:*`
 > {
   readonly type: '*' | `${string}:*`;
   readonly originalType: keyof E & string;
-  readonly detail: E[keyof E];
 }
 
 /**
@@ -75,9 +83,39 @@ export interface MinimalAbortSignal {
 /**
  * Options for addEventListener.
  */
-export type AddEventListenerOptionsLike = {
+export interface EventListenerOptionsLike {
+  capture?: boolean;
+}
+
+/**
+ * Options for addEventListener.
+ */
+export type AddEventListenerOptionsLike = EventListenerOptionsLike & {
   once?: boolean;
+  passive?: boolean;
   signal?: MinimalAbortSignal;
+};
+
+/**
+ * EventListener-like callback (function or object with handleEvent).
+ */
+export type EventListenerObject<T> = {
+  handleEvent: (event: T) => void | Promise<void>;
+};
+
+export type EventListenerLike<T> =
+  | ((event: T) => void | Promise<void>)
+  | EventListenerObject<T>;
+
+/**
+ * Minimal event input accepted by dispatchEvent.
+ */
+export type DispatchEventInput<Detail, Type extends string = string> = {
+  type: Type;
+  detail: Detail;
+  bubbles?: boolean;
+  cancelable?: boolean;
+  composed?: boolean;
 };
 
 /**
@@ -142,6 +180,10 @@ export interface InteropOptions {
 export interface DOMEventLike {
   type: string;
   detail?: unknown;
+  bubbles?: boolean;
+  cancelable?: boolean;
+  composed?: boolean;
+  defaultPrevented?: boolean;
 }
 
 /**
@@ -157,9 +199,14 @@ export interface DOMEventTargetLike {
  * Internal listener record type.
  */
 export type Listener<E> = {
-  fn: (event: EmissionEvent<E>) => void | Promise<void>;
-  once?: boolean;
-  signal?: MinimalAbortSignal;
+  type: string;
+  original: EventListenerLike<EmissionEvent<E>>;
+  callback: (event: EmissionEvent<E>) => void | Promise<void>;
+  capture: boolean;
+  passive: boolean;
+  once: boolean;
+  signal?: MinimalAbortSignal | null;
+  removed: boolean;
   abortHandler?: () => void;
 };
 
@@ -180,12 +227,8 @@ export type WildcardListener<E extends Record<string, unknown>> = {
 export interface OnOptions extends AddEventListenerOptionsLike {
   /** Listen for an "error" event and send it to the observer's error method. */
   receiveError?: boolean;
-  /** Member indicates that the callback will not cancel the event. */
-  passive?: boolean;
   /** Handler function called before the event is dispatched to observers. */
   handler?: (event: EmissionEvent<unknown>) => void;
-  /** Member indicates that the Observable will complete after one event. */
-  once?: boolean;
 }
 
 /**
@@ -196,38 +239,40 @@ export interface OnOptions extends AddEventListenerOptionsLike {
 export interface EventTargetLike<E extends Record<string, any>> {
   addEventListener: <K extends keyof E & string>(
     type: K,
-    listener: (event: EmissionEvent<E[K]>) => void | Promise<void>,
-    options?: AddEventListenerOptionsLike,
+    listener: EventListenerLike<EmissionEvent<E[K], K>> | null,
+    options?: AddEventListenerOptionsLike | boolean,
   ) => () => void;
   removeEventListener: <K extends keyof E & string>(
     type: K,
-    listener: (event: EmissionEvent<E[K]>) => void | Promise<void>,
+    listener: EventListenerLike<EmissionEvent<E[K], K>> | null,
+    options?: EventListenerOptionsLike | boolean,
   ) => void;
-  dispatchEvent: <K extends keyof E & string>(event: EmissionEvent<E[K]>) => boolean;
+  dispatchEvent: <K extends keyof E & string>(
+    event: DispatchEventInput<E[K], K> | DOMEventLike,
+  ) => boolean;
   clear: () => void;
 
   // Ergonomics
   on: <K extends keyof E & string>(
     type: K,
     options?: OnOptions | boolean,
-  ) => ObservableLike<EmissionEvent<E[K]>>;
+  ) => ObservableLike<EmissionEvent<E[K], K>>;
   once: <K extends keyof E & string>(
     type: K,
-    listener: (event: EmissionEvent<E[K]>) => void | Promise<void>,
-    options?: Omit<AddEventListenerOptionsLike, 'once'>,
+    listener: EventListenerLike<EmissionEvent<E[K], K>> | null,
+    options?: Omit<AddEventListenerOptionsLike, 'once'> | boolean,
   ) => () => void;
   removeAllListeners: <K extends keyof E & string>(type?: K) => void;
   /**
    * Pipe events from this emitter to another target.
-   * Note: Only forwards events for types that have listeners when pipe() is called.
-   * Events for types registered after piping won't be forwarded automatically.
+   * Forwards all events. If mapFn returns null, the event is skipped.
    */
   // eslint-disable-next-line @typescript-eslint/no-explicit-any -- Generic constraint requires any
   pipe: <T extends Record<string, any>>(
     target: EventTargetLike<T>,
     mapFn?: <K extends keyof E & string>(
-      event: EmissionEvent<E[K]>,
-    ) => EmissionEvent<T[keyof T & string]> | null,
+      event: EmissionEvent<E[K], K>,
+    ) => DispatchEventInput<T[keyof T & string], keyof T & string> | null,
   ) => () => void;
   complete: () => void;
   readonly completed: boolean;
@@ -247,8 +292,8 @@ export interface EventTargetLike<E extends Record<string, any>> {
   subscribe: <K extends keyof E & string>(
     type: K,
     observerOrNext?:
-      | Observer<EmissionEvent<E[K]>>
-      | ((value: EmissionEvent<E[K]>) => void),
+      | Observer<EmissionEvent<E[K], K>>
+      | ((value: EmissionEvent<E[K], K>) => void),
     error?: (err: unknown) => void,
     complete?: () => void,
   ) => Subscription;
@@ -258,5 +303,5 @@ export interface EventTargetLike<E extends Record<string, any>> {
   events: <K extends keyof E & string>(
     type: K,
     options?: AsyncIteratorOptions,
-  ) => AsyncIterableIterator<EmissionEvent<E[K]>>;
+  ) => AsyncIterableIterator<EmissionEvent<E[K], K>>;
 }

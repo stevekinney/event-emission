@@ -43,6 +43,37 @@ function createAbortSignal(): { signal: MinimalAbortSignal; abort: () => void } 
   };
 }
 
+function createTrackingAbortSignal(): {
+  signal: MinimalAbortSignal;
+  abort: () => void;
+  getListenerCount: () => number;
+  getRemoveCount: () => number;
+} {
+  const listeners = new Set<() => void>();
+  let removeCount = 0;
+  const signal: MinimalAbortSignal = {
+    aborted: false,
+    reason: undefined,
+    addEventListener(_type, listener) {
+      listeners.add(listener);
+    },
+    removeEventListener(_type, listener) {
+      removeCount += 1;
+      listeners.delete(listener);
+    },
+  };
+  return {
+    signal,
+    abort: () => {
+      if (signal.aborted) return;
+      Object.assign(signal, { aborted: true });
+      for (const listener of Array.from(listeners)) listener();
+    },
+    getListenerCount: () => listeners.size,
+    getRemoveCount: () => removeCount,
+  };
+}
+
 describe('EventEmission abstract class', () => {
   describe('subclass usage', () => {
     it('allows extending with typed events', () => {
@@ -89,6 +120,81 @@ describe('EventEmission abstract class', () => {
       expect(payload).toBe(100);
     });
 
+    it('stopImmediatePropagation stops remaining listeners', () => {
+      const emitter = new TestEmitter();
+      const calls: string[] = [];
+
+      emitter.addEventListener('foo', (event) => {
+        calls.push('first');
+        event.stopImmediatePropagation();
+      });
+      emitter.addEventListener('foo', () => {
+        calls.push('second');
+      });
+
+      emitter.dispatchEvent({ type: 'foo', detail: 1 });
+
+      expect(calls).toEqual(['first']);
+    });
+
+    it('stopPropagation does not stop other listeners on the same target', () => {
+      const emitter = new TestEmitter();
+      const calls: string[] = [];
+
+      emitter.addEventListener('foo', (event) => {
+        calls.push('first');
+        event.stopPropagation();
+      });
+      emitter.addEventListener('foo', () => {
+        calls.push('second');
+      });
+
+      emitter.dispatchEvent({ type: 'foo', detail: 1 });
+
+      expect(calls).toEqual(['first', 'second']);
+    });
+
+    it('capture listeners run before bubbling listeners', () => {
+      const emitter = new TestEmitter();
+      const calls: string[] = [];
+
+      emitter.addEventListener('foo', () => {
+        calls.push('bubble');
+      });
+      emitter.addEventListener(
+        'foo',
+        () => {
+          calls.push('capture');
+        },
+        true,
+      );
+
+      emitter.dispatchEvent({ type: 'foo', detail: 1 });
+
+      expect(calls).toEqual(['capture', 'bubble']);
+    });
+
+    it('stopPropagation during capture skips bubbling listeners', () => {
+      const emitter = new TestEmitter();
+      const calls: string[] = [];
+
+      emitter.addEventListener(
+        'foo',
+        (event) => {
+          calls.push('capture');
+          event.stopPropagation();
+        },
+        true,
+      );
+      emitter.addEventListener('foo', () => {
+        calls.push('bubble');
+      });
+
+      emitter.dispatchEvent({ type: 'foo', detail: 1 });
+
+      expect(calls).toEqual(['capture']);
+    });
+
     it('removeEventListener removes the listener', () => {
       const emitter = new TestEmitter();
       let calls = 0;
@@ -104,6 +210,97 @@ describe('EventEmission abstract class', () => {
       emitter.removeEventListener('foo', listener);
       emitter.dispatchEvent({ type: 'foo', detail: 2 });
       expect(calls).toBe(1);
+    });
+
+    it('supports EventListenerObject handleEvent', () => {
+      const emitter = new TestEmitter();
+      const calls: string[] = [];
+      const listener = {
+        handleEvent: () => {
+          calls.push('handled');
+        },
+      };
+
+      emitter.addEventListener('foo', listener);
+      emitter.dispatchEvent({ type: 'foo', detail: 1 });
+      emitter.removeEventListener('foo', listener);
+      emitter.dispatchEvent({ type: 'foo', detail: 2 });
+
+      expect(calls).toEqual(['handled']);
+    });
+
+    it('ignores duplicate listeners for the same event type', () => {
+      const emitter = new TestEmitter();
+      let calls = 0;
+
+      const listener = () => {
+        calls += 1;
+      };
+
+      emitter.addEventListener('foo', listener);
+      emitter.addEventListener('foo', listener);
+
+      emitter.dispatchEvent({ type: 'foo', detail: 1 });
+      expect(calls).toBe(1);
+
+      emitter.removeEventListener('foo', listener);
+      emitter.dispatchEvent({ type: 'foo', detail: 2 });
+      expect(calls).toBe(1);
+    });
+
+    it('removeEventListener respects capture', () => {
+      const emitter = new TestEmitter();
+      const calls: string[] = [];
+      const listener = () => {
+        calls.push('call');
+      };
+
+      emitter.addEventListener('foo', listener, true);
+      emitter.addEventListener('foo', listener, false);
+
+      emitter.removeEventListener('foo', listener, true);
+      emitter.dispatchEvent({ type: 'foo', detail: 1 });
+
+      expect(calls).toEqual(['call']);
+    });
+
+    it('passive listeners do not prevent default', () => {
+      const emitter = new TestEmitter();
+      let defaultPrevented = false;
+
+      emitter.addEventListener(
+        'foo',
+        (event) => {
+          event.preventDefault();
+          defaultPrevented = event.defaultPrevented;
+        },
+        { passive: true },
+      );
+
+      const result = emitter.dispatchEvent({
+        type: 'foo',
+        detail: 1,
+        cancelable: true,
+      });
+
+      expect(defaultPrevented).toBe(false);
+      expect(result).toBe(true);
+    });
+
+    it('dispatchEvent returns false when cancelable event is prevented', () => {
+      const emitter = new TestEmitter();
+
+      emitter.addEventListener('foo', (event) => {
+        event.preventDefault();
+      });
+
+      const result = emitter.dispatchEvent({
+        type: 'foo',
+        detail: 1,
+        cancelable: true,
+      });
+
+      expect(result).toBe(false);
     });
 
     it('dispatchEvent returns false after completion', () => {
@@ -137,6 +334,39 @@ describe('EventEmission abstract class', () => {
       emitter.once('foo', () => {
         calls += 1;
       });
+
+      emitter.dispatchEvent({ type: 'foo', detail: 1 });
+      emitter.dispatchEvent({ type: 'foo', detail: 2 });
+
+      expect(calls).toBe(1);
+    });
+
+    it('on returns an observable and accepts boolean options', () => {
+      const emitter = new TestEmitter();
+      const received: number[] = [];
+
+      const subscription = emitter.on('foo', true).subscribe((event) => {
+        received.push(event.detail);
+      });
+
+      emitter.dispatchEvent({ type: 'foo', detail: 10 });
+      subscription.unsubscribe();
+      emitter.dispatchEvent({ type: 'foo', detail: 20 });
+
+      expect(received).toEqual([10]);
+    });
+
+    it('once accepts boolean capture option', () => {
+      const emitter = new TestEmitter();
+      let calls = 0;
+
+      emitter.once(
+        'foo',
+        () => {
+          calls += 1;
+        },
+        true,
+      );
 
       emitter.dispatchEvent({ type: 'foo', detail: 1 });
       emitter.dispatchEvent({ type: 'foo', detail: 2 });
@@ -497,6 +727,19 @@ describe('EventEmission abstract class', () => {
       expect(results).toEqual([1]);
     });
 
+    it('cleans up abort listener on complete()', () => {
+      const emitter = new TestEmitter();
+      const { signal, getListenerCount, getRemoveCount } = createTrackingAbortSignal();
+
+      emitter.events('foo', { signal });
+      expect(getListenerCount()).toBe(1);
+
+      emitter.complete();
+
+      expect(getRemoveCount()).toBe(1);
+      expect(getListenerCount()).toBe(0);
+    });
+
     it('ends iteration on signal abort', async () => {
       const emitter = new TestEmitter();
       const { signal, abort } = createAbortSignal();
@@ -593,6 +836,27 @@ describe('EventEmission abstract class', () => {
 
       // Second next() should throw BufferOverflowError
       await expect(iterator.next()).rejects.toThrow(BufferOverflowError);
+    });
+
+    it('cleans up abort listener on overflow', async () => {
+      const emitter = new TestEmitter();
+      const { signal, getListenerCount, getRemoveCount } = createTrackingAbortSignal();
+      const iterator = emitter.events('foo', {
+        bufferSize: 1,
+        overflowStrategy: 'throw',
+        signal,
+      });
+
+      expect(getListenerCount()).toBe(1);
+
+      emitter.dispatchEvent({ type: 'foo', detail: 1 });
+      emitter.dispatchEvent({ type: 'foo', detail: 2 });
+
+      await iterator.next();
+      await expect(iterator.next()).rejects.toThrow(BufferOverflowError);
+
+      expect(getRemoveCount()).toBe(1);
+      expect(getListenerCount()).toBe(0);
     });
 
     it('return() cleans up iterator', async () => {
@@ -738,9 +1002,6 @@ describe('EventEmission abstract class', () => {
       const target = new TestEmitter();
       const received: number[] = [];
 
-      // Add listener to source first - pipe forwards from source to target
-      source.addEventListener('foo', () => {});
-
       source.pipe(target);
 
       target.addEventListener('foo', (event) => {
@@ -756,9 +1017,6 @@ describe('EventEmission abstract class', () => {
       const source = new TestEmitter();
       const target = new TestEmitter();
       const received: number[] = [];
-
-      // Add listener to source first
-      source.addEventListener('foo', () => {});
 
       const unsub = source.pipe(target);
 
@@ -781,9 +1039,6 @@ describe('EventEmission abstract class', () => {
       const source = new SourceEmitter();
       const target = new TargetEmitter();
       const received: string[] = [];
-
-      // Add listener to source first
-      source.addEventListener('input', () => {});
 
       source.pipe(target, (event) => ({
         type: 'output',
