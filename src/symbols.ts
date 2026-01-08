@@ -1,5 +1,5 @@
 /**
- * Symbol.observable polyfill for TC39 Observable interop.
+ * Symbol.observable polyfill for TC39 Observable interoperability.
  * This ensures the symbol exists even in environments that don't support it natively.
  */
 export const SymbolObservable: symbol =

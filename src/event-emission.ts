@@ -23,7 +23,7 @@ import type {
  * Extend this class to create custom event emitters with typed events.
  * The class provides:
  * - DOM EventTarget compatible API (addEventListener, removeEventListener, dispatchEvent)
- * - TC39 Observable interop (subscribe, Symbol.observable)
+ * - TC39 Observable interoperability (subscribe, Symbol.observable)
  * - Async iteration support (events() method)
  * - Wildcard listeners for namespaced events
  * - Lifecycle management (complete(), completed)
@@ -55,7 +55,7 @@ import type {
  * });
  * ```
  *
- * @example TC39 Observable interop
+ * @example TC39 Observable interoperability
  * ```typescript
  * const service = new UserService();
  *
@@ -288,7 +288,7 @@ export abstract class EventEmission<E extends Record<string, any>> {
   }
 
   /**
-   * Returns this observable for Symbol.observable interop.
+   * Returns this observable for Symbol.observable interoperability.
    */
   [SymbolObservable](): ObservableLike<EmissionEvent<E[keyof E]>> {
     return this.toObservable();

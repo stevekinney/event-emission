@@ -998,7 +998,7 @@ function createEventTargetInternal<E extends Record<string, any>>(
     wildcardListeners.clear();
   };
 
-  // Observable interop
+  // Observable interoperability
   const subscribe: EventTargetLike<E>['subscribe'] = (
     type,
     observerOrNext,

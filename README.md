@@ -64,12 +64,33 @@ events.dispatchEvent({
 
 ## API overview
 
+Core (`event-emission`):
+
 - `createEventTarget<E>(options?)`
 - `createEventTarget(target, { observe: true, ... })`
 - `EventEmission<E>` base class
-- `Observable<T>` compliant implementation
-- Interop: `fromEventTarget`, `forwardToEventTarget`, `pipe`
-- Utilities: `isObserved`, `getOriginal`
+
+Optional subpaths:
+
+- `Observable<T>` compliant implementation (`event-emission/observable`)
+- Interoperability: `fromEventTarget`, `forwardToEventTarget`, `pipe` (`event-emission/interoperability`)
+- Observe utilities: `isObserved`, `getOriginal`, `setupEventForwarding` (`event-emission/observe`)
+- Types-only exports (`event-emission/types`)
+
+## Subpath exports
+
+To keep the core entrypoint lean, optional features are exposed via subpath exports:
+
+```typescript
+import { Observable } from 'event-emission/observable';
+import { getOriginal, isObserved, setupEventForwarding } from 'event-emission/observe';
+import {
+  forwardToEventTarget,
+  fromEventTarget,
+  pipe,
+} from 'event-emission/interoperability';
+import type { EventTargetLike } from 'event-emission/types';
+```
 
 ## createEventTarget
 
@@ -289,7 +310,7 @@ observable
 A fully compliant implementation of the TC39 Observable proposal.
 
 ```typescript
-import { Observable } from 'event-emission';
+import { Observable } from 'event-emission/observable';
 
 // Create from items
 const numbers = Observable.of(1, 2, 3);
@@ -339,7 +360,7 @@ class UserService extends EventEmission<{
 ### `fromEventTarget(domTarget, eventTypes, options?)`
 
 ```typescript
-import { fromEventTarget } from 'event-emission';
+import { fromEventTarget } from 'event-emission/interoperability';
 
 type ButtonEvents = {
   click: MouseEvent;
@@ -359,7 +380,8 @@ events.destroy();
 ### `forwardToEventTarget(source, domTarget, options?)`
 
 ```typescript
-import { createEventTarget, forwardToEventTarget } from 'event-emission';
+import { createEventTarget } from 'event-emission';
+import { forwardToEventTarget } from 'event-emission/interoperability';
 
 const events = createEventTarget<{ custom: { value: number } }>();
 const element = document.getElementById('target');
@@ -374,7 +396,8 @@ unsubscribe();
 ### `pipe(source, target, options?)`
 
 ```typescript
-import { createEventTarget, pipe } from 'event-emission';
+import { createEventTarget } from 'event-emission';
+import { pipe } from 'event-emission/interoperability';
 
 const componentEvents = createEventTarget<{ ready: void }>();
 const appBus = createEventTarget<{ ready: void }>();
@@ -474,9 +497,17 @@ const state = useObservable(store);
 
 Checks if an object is an observed proxy.
 
+```typescript
+import { isObserved } from 'event-emission/observe';
+```
+
 ### `getOriginal(proxy)`
 
 Returns the original unproxied object.
+
+```typescript
+import { getOriginal } from 'event-emission/observe';
+```
 
 ## TypeScript types
 
@@ -484,16 +515,18 @@ Returns the original unproxied object.
 import type {
   EmissionEvent,
   EventTargetLike,
-  Observable,
   ObservableLike,
   Observer,
   Subscription,
   WildcardEvent,
   AddEventListenerOptionsLike,
+} from 'event-emission/types';
+
+import type {
   ObservableEventMap,
   PropertyChangeDetail,
   ArrayMutationDetail,
-  Subscriber,
-  SubscriptionObserver,
-} from 'event-emission';
+} from 'event-emission/observe';
+
+import type { Subscriber, SubscriptionObserver } from 'event-emission/observable';
 ```

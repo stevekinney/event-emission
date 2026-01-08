@@ -16,7 +16,13 @@ import { $ } from 'bun';
 const ROOT = import.meta.dirname ? join(import.meta.dirname, '..') : process.cwd();
 const DIST = join(ROOT, 'dist');
 const SRC = join(ROOT, 'src');
-const ENTRYPOINT = join(SRC, 'index.ts');
+const ENTRYPOINTS = [
+  join(SRC, 'index.ts'),
+  join(SRC, 'observable.ts'),
+  join(SRC, 'observe.ts'),
+  join(SRC, 'interoperability.ts'),
+  join(SRC, 'types.ts'),
+];
 
 async function clean(): Promise<void> {
   console.log('Cleaning dist/...');
@@ -27,7 +33,7 @@ async function clean(): Promise<void> {
 async function buildESM(): Promise<void> {
   console.log('Building ESM...');
   const result = await Bun.build({
-    entrypoints: [ENTRYPOINT],
+    entrypoints: ENTRYPOINTS,
     outdir: DIST,
     format: 'esm',
     target: 'bun',
@@ -52,7 +58,7 @@ async function buildESM(): Promise<void> {
 async function buildCJS(): Promise<void> {
   console.log('Building CJS...');
   const result = await Bun.build({
-    entrypoints: [ENTRYPOINT],
+    entrypoints: ENTRYPOINTS,
     outdir: DIST,
     format: 'cjs',
     target: 'bun',
@@ -101,6 +107,18 @@ async function main(): Promise<void> {
   console.log('  - dist/index.js (ESM)');
   console.log('  - dist/index.cjs (CJS)');
   console.log('  - dist/index.d.ts (TypeScript declarations)');
+  console.log('  - dist/observe.js (ESM)');
+  console.log('  - dist/observe.cjs (CJS)');
+  console.log('  - dist/observe.d.ts (TypeScript declarations)');
+  console.log('  - dist/observable.js (ESM)');
+  console.log('  - dist/observable.cjs (CJS)');
+  console.log('  - dist/observable.d.ts (TypeScript declarations)');
+  console.log('  - dist/interoperability.js (ESM)');
+  console.log('  - dist/interoperability.cjs (CJS)');
+  console.log('  - dist/interoperability.d.ts (TypeScript declarations)');
+  console.log('  - dist/types.js (ESM)');
+  console.log('  - dist/types.cjs (CJS)');
+  console.log('  - dist/types.d.ts (TypeScript declarations)');
 }
 
 main().catch((error: unknown) => {

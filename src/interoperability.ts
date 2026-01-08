@@ -7,6 +7,8 @@ import type {
   InteropOptions,
 } from './types';
 
+export type { DOMEventLike, DOMEventTargetLike, InteropOptions } from './types';
+
 /**
  * Forward events from an EventEmission target to a DOM EventTarget.
  *

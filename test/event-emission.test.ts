@@ -545,7 +545,7 @@ describe('EventEmission abstract class', () => {
     });
   });
 
-  describe('TC39 Observable interop', () => {
+  describe('TC39 Observable interoperability', () => {
     it('subscribe with observer object receives events', () => {
       const emitter = new TestEmitter();
       const received: EmissionEvent<unknown>[] = [];

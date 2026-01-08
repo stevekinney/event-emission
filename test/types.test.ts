@@ -7,14 +7,10 @@ import {
   type EmissionEvent,
   EventEmission,
   type EventTargetLike,
-  forwardToEventTarget,
-  fromEventTarget,
-  type ObservableLike,
-  type Observer,
-  pipe,
-  type Subscription,
   type WildcardEvent,
 } from '../src/index';
+import { forwardToEventTarget, fromEventTarget, pipe } from '../src/interoperability';
+import type { ObservableLike, Observer, Subscription } from '../src/types';
 
 /**
  * DOM EventTarget interface for reference:
@@ -252,7 +248,7 @@ describe('Wildcard listener types', () => {
   });
 });
 
-describe('EventTarget interop types', () => {
+describe('EventTarget interoperability types', () => {
   test('forwardToEventTarget is exported', () => {
     expectTypeOf(forwardToEventTarget).toBeFunction();
   });

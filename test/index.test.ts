@@ -4,16 +4,11 @@ import {
   createEventTarget,
   type EmissionEvent,
   EventEmission,
-  forwardToEventTarget,
-  fromEventTarget,
-  getOriginal,
-  isObserved,
   type MinimalAbortSignal,
-  ORIGINAL_TARGET,
-  pipe,
-  PROXY_MARKER,
   type WildcardEvent,
 } from '../src/index';
+import { forwardToEventTarget, fromEventTarget, pipe } from '../src/interoperability';
+import { getOriginal, isObserved, ORIGINAL_TARGET, PROXY_MARKER } from '../src/observe';
 
 describe('createEventTarget', () => {
   it('dispatches events to subscribed listeners', () => {
@@ -514,7 +509,7 @@ describe('complete()', () => {
   });
 });
 
-describe('subscribe() Observable interop', () => {
+describe('subscribe() Observable interoperability', () => {
   it('subscribes with observer object', () => {
     type Events = { ping: { count: number } };
     const hub = createEventTarget<Events>();
@@ -1385,7 +1380,7 @@ describe('wildcard listeners', () => {
   });
 });
 
-describe('EventTarget interop', () => {
+describe('EventTarget interoperability', () => {
   it('forwardToEventTarget forwards events to DOM target', () => {
     type Events = { click: { x: number; y: number } };
     const hub = createEventTarget<Events>();

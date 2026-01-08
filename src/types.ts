@@ -168,14 +168,14 @@ export interface AsyncIteratorOptions {
 export type EventsIteratorOptions = AsyncIteratorOptions;
 
 /**
- * Options for interop helpers.
+ * Options for interoperability helpers.
  */
 export interface InteropOptions {
   signal?: MinimalAbortSignal;
 }
 
 /**
- * Minimal DOM Event interface for interop.
+ * Minimal DOM Event interface for interoperability.
  */
 export interface DOMEventLike {
   type: string;
@@ -187,7 +187,7 @@ export interface DOMEventLike {
 }
 
 /**
- * Minimal DOM EventTarget interface for interop.
+ * Minimal DOM EventTarget interface for interoperability.
  */
 export interface DOMEventTargetLike {
   addEventListener(type: string, listener: (event: DOMEventLike) => void): void;
@@ -288,7 +288,7 @@ export interface EventTargetLike<E extends Record<string, any>> {
     listener: (event: WildcardEvent<E>) => void | Promise<void>,
   ) => void;
 
-  // Observable interop
+  // Observable interoperability
   subscribe: <K extends keyof E & string>(
     type: K,
     observerOrNext?:

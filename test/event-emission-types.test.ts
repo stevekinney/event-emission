@@ -4,10 +4,8 @@ import { describe, expectTypeOf,test } from 'bun:test';
 import {
   type EmissionEvent,
   EventEmission,
-  type ObservableLike,
-  type Observer,
-  type Subscription,
 } from '../src/index';
+import type { ObservableLike, Observer, Subscription } from '../src/types';
 
 // Concrete implementation for type testing
 class TestEmitter extends EventEmission<{

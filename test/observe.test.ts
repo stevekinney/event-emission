@@ -1,16 +1,18 @@
 import { describe, expect, it } from 'bun:test';
 
 import {
-  type ArrayMutationDetail,
   createEventTarget,
   type EmissionEvent,
   type EventTargetLike,
+} from '../src/index';
+import {
+  type ArrayMutationDetail,
   getOriginal,
   isObserved,
   type ObservableEventMap,
   type PropertyChangeDetail,
   setupEventForwarding,
-} from '../src/index';
+} from '../src/observe';
 
 describe('observe module coverage', () => {
   describe('cloneForComparison strategies', () => {
