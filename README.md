@@ -9,6 +9,7 @@ A lightweight, zero-dependency, type-safe event system with DOM EventTarget ergo
 - **Typed events** - Event maps keep payloads and event names in sync
 - **DOM compatible** - `EmissionEvent` is a superset of the built-in `Event`
 - **Familiar API** - `addEventListener`, `removeEventListener`, `dispatchEvent`
+- **Node.js compatible** - `emit`, `on`, `off`, `addListener`, `removeListener`, `prependListener`, and more
 - **TC39 Observable** - Fully compliant `Observable` implementation (passes all `es-observable-tests`)
 - **Async iteration** - `for await...of` over events with backpressure options
 - **Wildcard listeners** - Listen to `*` or namespaced `user:*` patterns
@@ -169,9 +170,21 @@ const state = createEventTarget(
 
 ## Event listeners
 
+### `on(type, listener)`
+
+When called with a listener function (or `EventListenerObject`), `on` behaves like Node.js `addListener`—it registers the listener and returns an unsubscribe function.
+
+```typescript
+const unsubscribe = events.on('message', (event) => {
+  console.log(event.detail.text);
+});
+
+unsubscribe(); // Remove the listener
+```
+
 ### `on(type, options?)`
 
-Creates an `Observable` for a specific event type. This follows the `ObservableEventTarget` proposal, allowing for powerful composition.
+When called without a listener (or with an options object / boolean), `on` creates an `Observable` for a specific event type. This follows the `ObservableEventTarget` proposal, allowing for powerful composition.
 
 ```typescript
 const clicks = button.on('click', { passive: true });
@@ -240,6 +253,70 @@ events.addWildcardListener('user:*', (event) => {
 ```
 
 Wildcard events include `{ type: pattern, originalType, detail }`.
+
+## Node.js EventEmitter compatibility
+
+Every event target also exposes the familiar Node.js `EventEmitter` interface, so you can use whichever style fits your codebase.
+
+### `emit(type, detail)`
+
+Dispatches an event and returns `true` if listeners were registered for that type, `false` otherwise.
+
+```typescript
+events.on('message', (event) => {
+  console.log(event.detail.text);
+});
+
+events.emit('message', { text: 'hello' }); // true
+events.emit('unknown', undefined); // false
+```
+
+### `off(type, listener)`
+
+Removes a listener. Alias for `removeEventListener(type, listener)`.
+
+### `addListener(type, listener)` / `removeListener(type, listener)`
+
+Aliases for `addEventListener` and `removeEventListener`.
+
+### `prependListener(type, listener)`
+
+Adds a listener at the **beginning** of the listener list. Returns an unsubscribe function.
+
+```typescript
+events.addEventListener('data', () => console.log('second'));
+events.prependListener('data', () => console.log('first'));
+
+events.emit('data', value); // logs "first", then "second"
+```
+
+### `prependOnceListener(type, listener)`
+
+Like `prependListener`, but the listener is removed after its first invocation.
+
+### `listeners(type)`
+
+Returns an array of the listener functions registered for the given type.
+
+### `rawListeners(type)`
+
+Like `listeners`, but once-listeners return a wrapper function with a `.listener` property pointing to the original callback.
+
+### `listenerCount(type)`
+
+Returns the number of listeners registered for the given type.
+
+### `eventNames()`
+
+Returns an array of event type strings that currently have registered listeners.
+
+```typescript
+events.on('foo', () => {});
+events.on('bar', () => {});
+
+events.eventNames(); // ['foo', 'bar']
+events.listenerCount('foo'); // 1
+```
 
 ## Async iteration
 
