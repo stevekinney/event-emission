@@ -130,13 +130,28 @@ export abstract class EventEmission<E extends Record<string, any>> {
   // ==========================================================================
 
   /**
+   * Adds a listener for the specified event type (Node.js-style).
+   * Returns an unsubscribe function.
+   */
+  on<K extends keyof E & string>(
+    type: K,
+    listener: EventListenerLike<EmissionEvent<E[K], K>>,
+  ): () => void;
+
+  /**
    * Returns an observable for the specified event type.
    */
   on<K extends keyof E & string>(
     type: K,
     options?: OnOptions | boolean,
-  ): ObservableLike<EmissionEvent<E[K], K>> {
-    return this.#target.on(type, options);
+  ): ObservableLike<EmissionEvent<E[K], K>>;
+
+  on<K extends keyof E & string>(
+    type: K,
+    optionsOrListener?: OnOptions | boolean | EventListenerLike<EmissionEvent<E[K], K>>,
+  ): ObservableLike<EmissionEvent<E[K], K>> | (() => void) {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any, @typescript-eslint/no-unsafe-argument
+    return this.#target.on(type, optionsOrListener as any);
   }
 
   /**
@@ -177,6 +192,104 @@ export abstract class EventEmission<E extends Record<string, any>> {
     ) => DispatchEventInput<T[keyof T & string], keyof T & string> | null,
   ): () => void {
     return this.#target.pipe(target, mapFn);
+  }
+
+  // ==========================================================================
+  // Node.js EventEmitter Compatibility
+  // ==========================================================================
+
+  /**
+   * Emits an event with the given type and detail.
+   * Returns true if the event type had registered listeners, false otherwise.
+   */
+  emit<K extends keyof E & string>(type: K, detail: E[K]): boolean {
+    return this.#target.emit(type, detail);
+  }
+
+  /**
+   * Removes a listener for the specified event type.
+   */
+  off<K extends keyof E & string>(
+    type: K,
+    listener: EventListenerLike<EmissionEvent<E[K], K>>,
+  ): void {
+    this.#target.off(type, listener);
+  }
+
+  /**
+   * Adds a listener for the specified event type.
+   * Returns an unsubscribe function.
+   */
+  addListener<K extends keyof E & string>(
+    type: K,
+    listener: EventListenerLike<EmissionEvent<E[K], K>>,
+  ): () => void {
+    return this.#target.addListener(type, listener);
+  }
+
+  /**
+   * Removes a listener for the specified event type.
+   */
+  removeListener<K extends keyof E & string>(
+    type: K,
+    listener: EventListenerLike<EmissionEvent<E[K], K>>,
+  ): void {
+    this.#target.removeListener(type, listener);
+  }
+
+  /**
+   * Adds a listener at the beginning of the listener list for the specified type.
+   * Returns an unsubscribe function.
+   */
+  prependListener<K extends keyof E & string>(
+    type: K,
+    listener: EventListenerLike<EmissionEvent<E[K], K>>,
+  ): () => void {
+    return this.#target.prependListener(type, listener);
+  }
+
+  /**
+   * Adds a one-time listener at the beginning of the listener list.
+   * Returns an unsubscribe function.
+   */
+  prependOnceListener<K extends keyof E & string>(
+    type: K,
+    listener: EventListenerLike<EmissionEvent<E[K], K>>,
+  ): () => void {
+    return this.#target.prependOnceListener(type, listener);
+  }
+
+  /**
+   * Returns an array of listener functions for the specified event type.
+   */
+  listeners<K extends keyof E & string>(
+    type: K,
+  ): Array<EventListenerLike<EmissionEvent<E[K], K>>> {
+    return this.#target.listeners(type);
+  }
+
+  /**
+   * Returns an array of listener functions for the specified event type.
+   * Once-listeners return a wrapper with a `.listener` property pointing to the original.
+   */
+  rawListeners<K extends keyof E & string>(
+    type: K,
+  ): Array<EventListenerLike<EmissionEvent<E[K], K>>> {
+    return this.#target.rawListeners(type);
+  }
+
+  /**
+   * Returns the number of listeners for the specified event type.
+   */
+  listenerCount<K extends keyof E & string>(type: K): number {
+    return this.#target.listenerCount(type);
+  }
+
+  /**
+   * Returns an array of event type names that have registered listeners.
+   */
+  eventNames(): Array<string> {
+    return this.#target.eventNames();
   }
 
   // ==========================================================================

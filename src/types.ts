@@ -253,16 +253,53 @@ export interface EventTargetLike<E extends Record<string, any>> {
   clear: () => void;
 
   // Ergonomics
-  on: <K extends keyof E & string>(
-    type: K,
-    options?: OnOptions | boolean,
-  ) => ObservableLike<EmissionEvent<E[K], K>>;
+  on: {
+    <K extends keyof E & string>(
+      type: K,
+      listener: EventListenerLike<EmissionEvent<E[K], K>>,
+    ): () => void;
+    <K extends keyof E & string>(
+      type: K,
+      options?: OnOptions | boolean,
+    ): ObservableLike<EmissionEvent<E[K], K>>;
+  };
   once: <K extends keyof E & string>(
     type: K,
     listener: EventListenerLike<EmissionEvent<E[K], K>> | null,
     options?: Omit<AddEventListenerOptionsLike, 'once'> | boolean,
   ) => () => void;
   removeAllListeners: <K extends keyof E & string>(type?: K) => void;
+
+  // Node.js EventEmitter compatibility
+  emit: <K extends keyof E & string>(type: K, detail: E[K]) => boolean;
+  off: <K extends keyof E & string>(
+    type: K,
+    listener: EventListenerLike<EmissionEvent<E[K], K>>,
+  ) => void;
+  addListener: <K extends keyof E & string>(
+    type: K,
+    listener: EventListenerLike<EmissionEvent<E[K], K>>,
+  ) => () => void;
+  removeListener: <K extends keyof E & string>(
+    type: K,
+    listener: EventListenerLike<EmissionEvent<E[K], K>>,
+  ) => void;
+  prependListener: <K extends keyof E & string>(
+    type: K,
+    listener: EventListenerLike<EmissionEvent<E[K], K>>,
+  ) => () => void;
+  prependOnceListener: <K extends keyof E & string>(
+    type: K,
+    listener: EventListenerLike<EmissionEvent<E[K], K>>,
+  ) => () => void;
+  listeners: <K extends keyof E & string>(
+    type: K,
+  ) => Array<EventListenerLike<EmissionEvent<E[K], K>>>;
+  rawListeners: <K extends keyof E & string>(
+    type: K,
+  ) => Array<EventListenerLike<EmissionEvent<E[K], K>>>;
+  listenerCount: <K extends keyof E & string>(type: K) => number;
+  eventNames: () => Array<string>;
   /**
    * Pipe events from this emitter to another target.
    * Forwards all events. If mapFn returns null, the event is skipped.

@@ -202,6 +202,16 @@ export function fromEventTarget<E extends Record<string, unknown>>(
       return emitter.completed;
     },
     events: emitter.events,
+    emit: emitter.emit,
+    off: emitter.off,
+    addListener: emitter.addListener,
+    removeListener: emitter.removeListener,
+    prependListener: emitter.prependListener,
+    prependOnceListener: emitter.prependOnceListener,
+    listeners: emitter.listeners,
+    rawListeners: emitter.rawListeners,
+    listenerCount: emitter.listenerCount,
+    eventNames: emitter.eventNames,
     destroy: () => {
       // Clean up abort signal listener to prevent memory leak
       if (options?.signal && onAbort) {

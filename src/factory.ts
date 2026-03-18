@@ -10,6 +10,7 @@ import type {
   AddEventListenerOptionsLike,
   AsyncIteratorOptions,
   EmissionEvent,
+  EventListenerLike,
   EventTargetLike,
   Listener,
   ObservableLike,
@@ -207,6 +208,16 @@ export function createEventTarget<T extends object, E extends Record<string, any
       'subscribe',
       'toObservable',
       'events',
+      'emit',
+      'off',
+      'addListener',
+      'removeListener',
+      'prependListener',
+      'prependOnceListener',
+      'listeners',
+      'rawListeners',
+      'listenerCount',
+      'eventNames',
     ] as const;
 
     for (const name of methodNames) {
@@ -544,13 +555,14 @@ function createEventTargetInternal<E extends Record<string, any>>(
     }
   };
 
-  const addEventListener: EventTargetLike<E>['addEventListener'] = (
-    type,
-    listener,
-    options,
-  ) => {
+  const addListenerInternal = (
+    type: string,
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- Internal helper; callers provide type-safe wrappers
+    listener: EventListenerLike<any> | null,
+    options: AddEventListenerOptionsLike | boolean | undefined,
+    position: 'append' | 'prepend',
+  ): (() => void) => {
     if (isCompleted || !listener) {
-      // Return no-op unsubscribe if already completed
       return () => {};
     }
 
@@ -589,7 +601,12 @@ function createEventTargetInternal<E extends Record<string, any>>(
       signal,
       removed: false,
     };
-    list.push(record);
+
+    if (position === 'prepend') {
+      list.unshift(record);
+    } else {
+      list.push(record);
+    }
 
     const unsubscribe = () => removeListenerRecord(type, record);
 
@@ -601,6 +618,14 @@ function createEventTargetInternal<E extends Record<string, any>>(
     }
 
     return unsubscribe;
+  };
+
+  const addEventListener: EventTargetLike<E>['addEventListener'] = (
+    type,
+    listener,
+    options,
+  ) => {
+    return addListenerInternal(type, listener, options, 'append');
   };
 
   const addWildcardListener: EventTargetLike<E>['addWildcardListener'] = (
@@ -816,11 +841,30 @@ function createEventTargetInternal<E extends Record<string, any>>(
 
   // New ergonomics
 
-  const on: EventTargetLike<E>['on'] = (type, options) => {
-    /* eslint-disable @typescript-eslint/no-explicit-any */
+  const isListenerArg = (
+    arg: unknown,
+  ): arg is EventListenerLike<EmissionEvent<unknown>> => {
+    if (typeof arg === 'function') return true;
+    if (
+      arg &&
+      typeof arg === 'object' &&
+      typeof (arg as { handleEvent?: unknown }).handleEvent === 'function'
+    )
+      return true;
+    return false;
+  };
+
+  /* eslint-disable @typescript-eslint/no-explicit-any, @typescript-eslint/no-unsafe-argument */
+  const on: EventTargetLike<E>['on'] = ((type: any, optionsOrListener: any) => {
+    // Node-style overload: on(type, listener) → () => void
+    if (isListenerArg(optionsOrListener)) {
+      return addEventListener(type, optionsOrListener);
+    }
+
+    // Observable-style: on(type, options?) → ObservableLike
+    const options = optionsOrListener as OnOptions | boolean | undefined;
     return new Observable<EmissionEvent<any>>(
       (observer: SubscriptionObserver<EmissionEvent<any>>) => {
-        /* eslint-enable @typescript-eslint/no-explicit-any */
         let opts: OnOptions;
         if (typeof options === 'boolean') {
           opts = { capture: options };
@@ -850,7 +894,6 @@ function createEventTargetInternal<E extends Record<string, any>>(
           observer.error(e.detail);
         };
 
-        /* eslint-disable @typescript-eslint/no-explicit-any, @typescript-eslint/no-unsafe-argument */
         const unsubscribeEvent = addEventListener(
           type as keyof E & string,
           eventHandler as any,
@@ -865,7 +908,6 @@ function createEventTargetInternal<E extends Record<string, any>>(
             opts,
           );
         }
-        /* eslint-enable @typescript-eslint/no-explicit-any, @typescript-eslint/no-unsafe-argument */
 
         return () => {
           unsubscribeEvent();
@@ -875,7 +917,8 @@ function createEventTargetInternal<E extends Record<string, any>>(
         };
       },
     );
-  };
+  }) as EventTargetLike<E>['on'];
+  /* eslint-enable @typescript-eslint/no-explicit-any, @typescript-eslint/no-unsafe-argument */
 
   const onceMethod: EventTargetLike<E>['once'] = (type, listener, options) => {
     if (typeof options === 'boolean') {
@@ -1285,6 +1328,89 @@ function createEventTargetInternal<E extends Record<string, any>>(
     return iterator;
   }
 
+  // Node.js EventEmitter compatibility methods
+
+  const emit: EventTargetLike<E>['emit'] = (type, detail) => {
+    if (isCompleted) return false;
+
+    const list = listeners.get(type);
+    const hasListeners = list !== undefined && list.length > 0;
+    let hasWildcard = false;
+    if (wildcardListeners.size > 0) {
+      for (const rec of wildcardListeners) {
+        if (matchesWildcard(type, rec.pattern)) {
+          hasWildcard = true;
+          break;
+        }
+      }
+    }
+
+    dispatchEvent({ type, detail } as Parameters<EventTargetLike<E>['dispatchEvent']>[0]);
+    return hasListeners || hasWildcard;
+  };
+
+  const off: EventTargetLike<E>['off'] = (type, listener) => {
+    removeEventListener(type, listener);
+  };
+
+  const addListener: EventTargetLike<E>['addListener'] = (type, listener) => {
+    return addEventListener(type, listener);
+  };
+
+  const removeListener: EventTargetLike<E>['removeListener'] = (type, listener) => {
+    removeEventListener(type, listener);
+  };
+
+  const prependListener: EventTargetLike<E>['prependListener'] = (type, listener) => {
+    return addListenerInternal(type, listener, undefined, 'prepend');
+  };
+
+  const prependOnceListener: EventTargetLike<E>['prependOnceListener'] = (
+    type,
+    listener,
+  ) => {
+    return addListenerInternal(type, listener, { once: true }, 'prepend');
+  };
+
+  const getListeners: EventTargetLike<E>['listeners'] = (type) => {
+    const list = listeners.get(type);
+    if (!list) return [];
+    return list.filter((r) => !r.removed).map((r) => r.original);
+  };
+
+  const rawListenersMethod: EventTargetLike<E>['rawListeners'] = (type) => {
+    const list = listeners.get(type);
+    if (!list) return [];
+    /* eslint-disable @typescript-eslint/no-explicit-any, @typescript-eslint/no-unsafe-return, @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access */
+    return list
+      .filter((r) => !r.removed)
+      .map((r) => {
+        if (r.once) {
+          const wrapper = ((...args: any[]) => (r.callback as any)(...args)) as any;
+          wrapper.listener = r.original;
+          return wrapper;
+        }
+        return r.original;
+      });
+    /* eslint-enable @typescript-eslint/no-explicit-any, @typescript-eslint/no-unsafe-return, @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access */
+  };
+
+  const listenerCount: EventTargetLike<E>['listenerCount'] = (type) => {
+    const list = listeners.get(type);
+    if (!list) return 0;
+    return list.filter((r) => !r.removed).length;
+  };
+
+  const eventNamesMethod: EventTargetLike<E>['eventNames'] = () => {
+    const names: string[] = [];
+    for (const [type, list] of listeners) {
+      if (list.some((r) => !r.removed)) {
+        names.push(type);
+      }
+    }
+    return names;
+  };
+
   const target: EventTargetLike<E> = {
     addEventListener,
     removeEventListener,
@@ -1303,6 +1429,16 @@ function createEventTargetInternal<E extends Record<string, any>>(
     subscribe,
     toObservable,
     events,
+    emit,
+    off,
+    addListener,
+    removeListener,
+    prependListener,
+    prependOnceListener,
+    listeners: getListeners,
+    rawListeners: rawListenersMethod,
+    listenerCount,
+    eventNames: eventNamesMethod,
   };
 
   // Add Symbol.observable - return an observable that emits all events from all types
