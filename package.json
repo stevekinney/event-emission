@@ -1,6 +1,6 @@
 {
   "name": "event-emission",
-  "version": "0.2.1",
+  "version": "0.3.0",
   "description": "Lightweight typed event emitter with DOM EventTarget and TC39 Observable compatibility",
   "keywords": [
     "event",
